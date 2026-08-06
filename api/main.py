@@ -8,12 +8,15 @@ can show progress instead of a spinner for the ~10s a full run takes.
 from __future__ import annotations
 
 import logging
+import secrets
+import time
 import uuid
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -89,6 +92,90 @@ app.add_middleware(
 )
 
 
+def require_api_key(x_api_key: str = Header(default="")) -> None:
+    """Reject requests without the configured API key.
+
+    Authentication is opt-in: with no API_KEY set the service runs open, which
+    is right for local development. Once set, every answering endpoint requires
+    it — each request spends metered LLM quota, so an open public endpoint is a
+    way to have someone else's traffic exhaust your daily budget.
+
+    Args:
+        x_api_key: Value of the X-API-Key request header.
+
+    Raises:
+        HTTPException: 401 when a key is configured and the header does not
+            match.
+    """
+    configured = get_settings().API_KEY
+    if configured is None:
+        return
+    # compare_digest keeps the check constant-time, so a wrong key cannot be
+    # discovered one character at a time by timing responses.
+    if not secrets.compare_digest(x_api_key, configured.get_secret_value()):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+
+class RateLimiter:
+    """Fixed-window per-client request limiter.
+
+    Deliberately in-process and simple: it protects a single instance from one
+    caller draining the LLM quota. A multi-instance deployment needs a shared
+    store (Redis), and this class is the seam where that would go.
+    """
+
+    def __init__(self, limit: int, window_seconds: int) -> None:
+        """Configure the limiter.
+
+        Args:
+            limit: Requests allowed per window.
+            window_seconds: Window length.
+        """
+        self.limit = limit
+        self.window = window_seconds
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    def check(self, client_id: str) -> None:
+        """Record a request and reject if the client is over its limit.
+
+        Args:
+            client_id: Caller identity, normally the source IP.
+
+        Raises:
+            HTTPException: 429 when the limit is exceeded.
+        """
+        now = time.monotonic()
+        recent = [t for t in self._hits[client_id] if now - t < self.window]
+        if len(recent) >= self.limit:
+            retry_after = int(self.window - (now - recent[0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded: {self.limit} requests per {self.window}s",
+                headers={"Retry-After": str(retry_after)},
+            )
+        recent.append(now)
+        self._hits[client_id] = recent
+
+
+_settings = get_settings()
+rate_limiter = RateLimiter(
+    _settings.RATE_LIMIT_REQUESTS, _settings.RATE_LIMIT_WINDOW_SECONDS
+)
+
+
+def enforce_rate_limit(request: Request) -> None:
+    """Apply the per-client rate limit to a request.
+
+    Args:
+        request: The incoming request, used for the client address.
+
+    Raises:
+        HTTPException: 429 when the caller is over its limit.
+    """
+    client = request.client.host if request.client else "unknown"
+    rate_limiter.check(client)
+
+
 def _to_response(state: dict[str, Any], trace_id: str) -> QueryResponse:
     """Convert a final graph state into the API response model.
 
@@ -147,7 +234,11 @@ async def health() -> HealthResponse:
     )
 
 
-@app.post("/query", response_model=QueryResponse)
+@app.post(
+    "/query",
+    response_model=QueryResponse,
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+)
 async def query(request: QueryRequest) -> QueryResponse:
     """Answer a question and return the complete result.
 
@@ -225,7 +316,10 @@ async def _event_stream(request: QueryRequest) -> AsyncIterator[str]:
         flush()
 
 
-@app.post("/query/stream")
+@app.post(
+    "/query/stream",
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+)
 async def query_stream(request: QueryRequest) -> StreamingResponse:
     """Answer a question, streaming progress as server-sent events.
 

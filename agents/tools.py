@@ -152,6 +152,21 @@ class EligibilityChecker:
             "reason": self._summarise(scheme, eligible, failed, missing),
         }
 
+    def has_scheme(self, scheme_id: str) -> bool:
+        """Whether hand-authored rules exist for a scheme.
+
+        Callers use this to distinguish "not eligible" from "cannot be
+        determined" — the corpus is broader than the rule set, and conflating
+        the two would show a user a rejection where none was computed.
+
+        Args:
+            scheme_id: Identifier to look up.
+
+        Returns:
+            True if rules are available for the scheme.
+        """
+        return scheme_id in self.schemes
+
     def check_all(self, user_profile: dict[str, Any]) -> list[dict[str, Any]]:
         """Evaluate a profile against every known scheme.
 

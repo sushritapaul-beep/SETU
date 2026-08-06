@@ -486,8 +486,22 @@ def check_eligibility(state: SetuState) -> dict[str, Any]:
     profile = state.get("profile") or {}
 
     try:
-        result = get_checker().check(scheme_id, profile)
+        checker = get_checker()
     except Exception as exc:  # noqa: BLE001 - missing rules file must not crash
+        logger.error("Eligibility checker unavailable (%s): %s", type(exc).__name__, exc)
+        return {"eligibility_result": None}
+
+    # Rules are hand-authored per scheme and the corpus is broader than the rule
+    # set. Emitting "Unknown scheme" as a verdict would read to a user as a
+    # rejection; returning no verdict lets the answer stay informational, which
+    # is the honest outcome when eligibility genuinely cannot be computed.
+    if not checker.has_scheme(scheme_id):
+        logger.info("check_eligibility: no rules for %r; answering informationally", scheme_id)
+        return {"eligibility_result": None}
+
+    try:
+        result = checker.check(scheme_id, profile)
+    except Exception as exc:  # noqa: BLE001 - one bad rule must not crash the graph
         logger.error("Eligibility check failed (%s): %s", type(exc).__name__, exc)
         return {"eligibility_result": None}
 

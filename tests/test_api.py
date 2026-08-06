@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -166,6 +167,71 @@ def test_cors_allows_the_gradio_origin(client: TestClient) -> None:
 
     assert response.status_code in {200, 204}
     assert response.headers["access-control-allow-origin"] == "http://localhost:7860"
+
+
+# --------------------------------------------------------------------------
+# Security: API key and rate limiting
+# --------------------------------------------------------------------------
+
+def test_no_api_key_configured_leaves_service_open(client: TestClient) -> None:
+    """Local development runs without auth; that is the documented default."""
+    assert client.post("/query", json={"query": "x"}).status_code == 200
+
+
+def test_configured_api_key_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a key set, answering endpoints reject callers that lack it."""
+    from pydantic import SecretStr
+
+    from config.settings import Settings
+
+    settings = Settings(_env_file=None)
+    settings.API_KEY = SecretStr("secret-key")
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "build_graph", lambda: _FakeGraph())
+    monkeypatch.setattr(langfuse_setup, "get_callback_handler", lambda: None)
+
+    with TestClient(api_main.app) as test_client:
+        assert test_client.post("/query", json={"query": "x"}).status_code == 401
+        wrong = test_client.post(
+            "/query", json={"query": "x"}, headers={"X-API-Key": "wrong"}
+        )
+        assert wrong.status_code == 401
+        ok = test_client.post(
+            "/query", json={"query": "x"}, headers={"X-API-Key": "secret-key"}
+        )
+        assert ok.status_code == 200
+
+    # /health must stay reachable without a key, or orchestrators cannot probe it.
+    with TestClient(api_main.app) as test_client:
+        assert test_client.get("/health").status_code == 200
+
+
+def test_rate_limiter_rejects_bursts_then_recovers() -> None:
+    """A caller over its limit gets 429 with Retry-After; others are unaffected."""
+    from fastapi import HTTPException
+
+    limiter = api_main.RateLimiter(limit=3, window_seconds=60)
+
+    for _ in range(3):
+        limiter.check("1.2.3.4")
+
+    with pytest.raises(HTTPException) as excinfo:
+        limiter.check("1.2.3.4")
+    assert excinfo.value.status_code == 429
+    assert "Retry-After" in excinfo.value.headers
+
+    # The limit is per client, so one abuser cannot lock everyone out.
+    limiter.check("5.6.7.8")
+
+
+def test_rate_limit_window_expires() -> None:
+    """Old requests fall out of the window rather than counting forever."""
+    limiter = api_main.RateLimiter(limit=1, window_seconds=60)
+    limiter.check("1.2.3.4")
+
+    # Simulate the first hit ageing past the window.
+    limiter._hits["1.2.3.4"] = [time.monotonic() - 61]
+    limiter.check("1.2.3.4")
 
 
 # --------------------------------------------------------------------------

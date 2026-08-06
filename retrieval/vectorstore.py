@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import asdict
 from typing import Any
 
 import numpy as np
@@ -154,9 +155,11 @@ class QdrantStore:
                     # the chunk's own id would otherwise be lost.
                     "chunk_id": chunk.id,
                     "parent_id": chunk.parent_id,
-                    "source_url": chunk.metadata.source_url,
-                    "scheme_name": chunk.metadata.scheme_name,
-                    "chunk_type": chunk.metadata.chunk_type,
+                    # Built from the metadata dataclass rather than a hand-listed
+                    # set of keys. An explicit list silently drops every field
+                    # added later — which is exactly how provenance was lost
+                    # here after it was added to ChunkMetadata.
+                    **asdict(chunk.metadata),
                 },
             )
             for i, chunk in enumerate(chunks)
@@ -355,4 +358,12 @@ class QdrantStore:
             "source_url": payload.get("source_url"),
             "scheme_name": payload.get("scheme_name"),
             "chunk_type": payload.get("chunk_type"),
+            # Provenance, so a citation can state when the source was retrieved
+            # rather than implying the information is current as of now.
+            "doc_format": payload.get("doc_format"),
+            "retrieved_at": payload.get("retrieved_at"),
+            "published_at": payload.get("published_at"),
+            "modified_at": payload.get("modified_at"),
+            "source_title": payload.get("source_title"),
+            "doc_hash": payload.get("doc_hash"),
         }

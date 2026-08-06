@@ -211,6 +211,54 @@ def test_upsert_chunks_writes_all_points(populated_store: QdrantStore) -> None:
     assert all(len(h["chunk_id"]) == 32 for h in hits)
 
 
+def test_provenance_survives_indexing_and_retrieval(fake_embedder: BGEM3Embedder) -> None:
+    """Every ChunkMetadata field reaches the Qdrant payload and comes back.
+
+    Provenance has now been dropped twice by code that listed payload fields by
+    hand — once at chunking, once at indexing. This pins the whole round trip so
+    a third occurrence fails here rather than in production.
+    """
+    chunk = Chunk(
+        id=f"{7:032x}",
+        parent_id=None,
+        text="Should be registered in the Udyam portal to apply for this scheme.",
+        metadata=ChunkMetadata(
+            source_url="https://www.myscheme.gov.in/schemes/mszcs",
+            scheme_name="ZED Certification",
+            chunk_type="child",
+            doc_format="pdf",
+            retrieved_at="2026-08-07T00:00:00+00:00",
+            published_at="2026-01-01",
+            modified_at="2026-06-01",
+            source_title="MSME Existing Schemes",
+            doc_hash="deadbeef",
+        ),
+    )
+    store = QdrantStore(
+        client=QdrantClient(":memory:"), collection="prov", dim=DIM, embedder=fake_embedder
+    )
+    store.ensure_collection(dim=DIM)
+    store.upsert_chunks([chunk], fake_embedder.embed_batch([chunk.text]))
+
+    hit = store.dense_search(fake_embedder.embed_query("Udyam portal"), k=1)[0]
+
+    assert hit["doc_format"] == "pdf"
+    assert hit["retrieved_at"] == "2026-08-07T00:00:00+00:00"
+    assert hit["published_at"] == "2026-01-01"
+    assert hit["modified_at"] == "2026-06-01"
+    assert hit["source_title"] == "MSME Existing Schemes"
+    assert hit["doc_hash"] == "deadbeef"
+
+    # Guard the root cause: the payload is built from the dataclass, so any
+    # field added to ChunkMetadata is carried without editing the store.
+    from dataclasses import fields
+
+    records = store.client.scroll("prov", limit=1, with_payload=True)[0]
+    payload_keys = set(records[0].payload)
+    for field in fields(ChunkMetadata):
+        assert field.name in payload_keys, f"{field.name} was dropped from the payload"
+
+
 def test_upsert_rejects_length_mismatch(populated_store: QdrantStore) -> None:
     """Misaligned chunks and vectors fail loudly instead of silently mispairing."""
     with pytest.raises(ValueError, match="length mismatch"):

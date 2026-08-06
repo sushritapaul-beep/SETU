@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # BGE-M3 dense width. Must equal the Qdrant collection's vector size, or
     # every upsert fails — kept here so both sides read one number.
     EMBEDDING_DIM: int = Field(default=1024, gt=0)
+    # Texts encoded per forward pass. Peak memory scales with this times the
+    # chunk length, and on a machine that is already short of RAM a large batch
+    # causes paging that costs far more than the batching saves — measured at
+    # ~20x slowdown here. Lower it on constrained hosts.
+    EMBED_BATCH_SIZE: int = Field(default=16, gt=0, le=256)
 
     # ---------- Vector store ----------
     QDRANT_URL: str = "http://localhost:6333"
@@ -76,6 +81,17 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: SecretStr | None = None
     LANGFUSE_HOST: str = "http://localhost:3000"
 
+    # ---------- API security ----------
+    # When set, /query and /query/stream require this key in the X-API-Key
+    # header. Left unset for local development; setting it is required before
+    # exposing the service, because each request spends metered LLM quota.
+    API_KEY: SecretStr | None = None
+    # Requests allowed per client IP per window. A public endpoint proxying a
+    # rate-limited LLM API needs its own limit, or one caller can exhaust the
+    # daily token budget for everyone.
+    RATE_LIMIT_REQUESTS: int = Field(default=20, gt=0)
+    RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60, gt=0)
+
     # ---------- API server ----------
     API_HOST: str = "0.0.0.0"
     API_PORT: int = Field(default=8000, gt=0, le=65535)
@@ -87,6 +103,7 @@ class Settings(BaseSettings):
         "QDRANT_API_KEY",
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
+        "API_KEY",
         mode="before",
     )
     @classmethod

@@ -28,7 +28,7 @@ class BGEM3Embedder:
         self,
         model_name: str | None = None,
         device: str | None = None,
-        batch_size: int = 16,
+        batch_size: int | None = None,
         normalize: bool = True,
     ) -> None:
         """Configure the embedder without loading anything yet.
@@ -37,14 +37,16 @@ class BGEM3Embedder:
             model_name: Hugging Face model id. Defaults to settings.EMBEDDING_MODEL.
             device: Torch device such as "cpu" or "cuda". None lets
                 sentence-transformers choose.
-            batch_size: Texts encoded per forward pass.
+            batch_size: Texts encoded per forward pass. Defaults to
+                settings.EMBED_BATCH_SIZE, which can be lowered on hosts where
+                a large batch triggers paging.
             normalize: L2-normalise outputs so cosine similarity equals dot
                 product, which is what the Qdrant collection is configured for.
         """
         settings = get_settings()
         self.model_name = model_name or settings.EMBEDDING_MODEL
         self.device = device
-        self.batch_size = batch_size
+        self.batch_size = batch_size if batch_size is not None else settings.EMBED_BATCH_SIZE
         self.normalize = normalize
         self._expected_dim = settings.EMBEDDING_DIM
 
