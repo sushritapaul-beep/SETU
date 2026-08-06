@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "_comment": "Hand-authored deterministic eligibility rules. Criteria are transcribed from the 'Eligibility' section of each scheme's myScheme page (see source_url). Where a portal states a qualitative condition ('must be an MSME unit'), it is encoded as the statutory MSMED Act 2006 turnover ceiling. Operators: '<=', '>=', '==', 'in'.",
+  "_field_glossary": {
+    "turnover_lakhs": "Annual turnover in lakhs of INR (1 crore = 100 lakhs).",
+    "entity_type": "MSME classification: micro | small | medium.",
+    "sector": "manufacturing | service | trading.",
+    "state": "Indian state or union territory name.",
+    "udyam_registered": "Holds a valid Udyam / Udyog Aadhaar registration.",
+    "blacklisted": "Has been blacklisted by any government body.",
+    "trainee_age": "Age in years of the trainee being sponsored.",
+    "commercial_production_start_date": "ISO date (YYYY-MM-DD); ISO strings compare correctly with <= and >=."
+  },
+  "schemes": [
+    {
+      "scheme_id": "mszcs",
+      "name": "MSME Sustainable (ZED) Certification Scheme",
+      "source_url": "https://www.myscheme.gov.in/schemes/mszcs",
+      "rules": [
+        {
+          "field": "entity_type",
+          "operator": "in",
+          "value": ["micro", "small", "medium"],
+          "description": "Should be a Micro, Small or Medium Enterprise (MSME) unit."
+        },
+        {
+          "field": "turnover_lakhs",
+          "operator": "<=",
+          "value": 25000,
+          "description": "Turnover must stay within the MSMED Act medium-enterprise ceiling of Rs 250 crore."
+        },
+        {
+          "field": "udyam_registered",
+          "operator": "==",
+          "value": true,
+          "description": "Should be registered on the Udyam portal."
+        }
+      ]
+    },
+    {
+      "scheme_id": "ds",
+      "name": "Design Scheme Under MSME Innovative Scheme",
+      "source_url": "https://www.myscheme.gov.in/schemes/ds",
+      "rules": [
+        {
+          "field": "entity_type",
+          "operator": "in",
+          "value": ["micro", "small", "medium"],
+          "description": "Beneficiary unit must be a registered micro, small or medium enterprise."
+        },
+        {
+          "field": "turnover_lakhs",
+          "operator": "<=",
+          "value": 25000,
+          "description": "Turnover must stay within the MSMED Act medium-enterprise ceiling of Rs 250 crore."
+        },
+        {
+          "field": "udyam_registered",
+          "operator": "==",
+          "value": true,
+          "description": "Must hold a valid Udyog Aadhaar Memorandum (UAM) or Udyam Registration certificate."
+        }
+      ]
+    },
+    {
+      "scheme_id": "msme-stes",
+      "name": "MSME Skill Training And Employment Scheme",
+      "source_url": "https://www.myscheme.gov.in/schemes/msme-stes",
+      "rules": [
+        {
+          "field": "entity_type",
+          "operator": "in",
+          "value": ["micro", "small", "medium"],
+          "description": "Applicant should be an MSME unit with the requisite infrastructure."
+        },
+        {
+          "field": "state",
+          "operator": "==",
+          "value": "Tamil Nadu",
+          "description": "Scheme is funded by the Tamil Nadu Skill Development Corporation, so the unit must be in Tamil Nadu."
+        },
+        {
+          "field": "trainee_age",
+          "operator": ">=",
+          "value": 18,
+          "description": "Trainees selected by the applicant shall be at least 18 years of age."
+        },
+        {
+          "field": "trainee_age",
+          "operator": "<=",
+          "value": 25,
+          "description": "Trainees selected by the applicant shall be at most 25 years of age."
+        },
+        {
+          "field": "blacklisted",
+          "operator": "==",
+          "value": false,
+          "description": "Applicant must not have been blacklisted under any government norms, rules or acts."
+        }
+      ]
+    },
+    {
+      "scheme_id": "samsmeata",
+      "name": "Scheme for Assistance to MSME: Assistance for Technology Acquisition",
+      "source_url": "https://www.myscheme.gov.in/schemes/samsmeata",
+      "rules": [
+        {
+          "field": "entity_type",
+          "operator": "in",
+          "value": ["micro", "small", "medium"],
+          "description": "The firm must be a Micro, Small or Medium enterprise."
+        },
+        {
+          "field": "state",
+          "operator": "==",
+          "value": "Gujarat",
+          "description": "Administered by the Gujarat MSME Commissionerate, so the unit must be in Gujarat."
+        },
+        {
+          "field": "technology_from_recognized_institution",
+          "operator": "==",
+          "value": true,
+          "description": "Technology must be acquired from a recognised institution or technology provider."
+        },
+        {
+          "field": "prior_approval_obtained",
+          "operator": "==",
+          "value": true,
+          "description": "Applicant must obtain prior approval from the MSME Commissionerate within one year of signing the MoU."
+        }
+      ]
+    },
+    {
+      "scheme_id": "ipsasmerctse",
+      "name": "Investment Promotion Scheme (IPS) for MSME Sector: Raising Capital Through SME Exchange",
+      "source_url": "https://www.myscheme.gov.in/schemes/ipsasmerctse",
+      "rules": [
+        {
+          "field": "sector",
+          "operator": "in",
+          "value": ["manufacturing", "service"],
+          "description": "Must be a new or expanding manufacturing or service unit in the MSME sector."
+        },
+        {
+          "field": "state",
+          "operator": "==",
+          "value": "Dadra and Nagar Haveli and Daman and Diu",
+          "description": "Unit must be located in the Union Territory of Dadra and Nagar Haveli and Daman and Diu."
+        },
+        {
+          "field": "commercial_production_start_date",
+          "operator": ">=",
+          "value": "2022-05-20",
+          "description": "Commercial production must have commenced on or after 20.05.2022."
+        },
+        {
+          "field": "commercial_production_start_date",
+          "operator": "<=",
+          "value": "2027-05-19",
+          "description": "Commercial production must have commenced on or before 19.05.2027."
+        },
+        {
+          "field": "listed_on_sme_exchange",
+          "operator": "==",
+          "value": true,
+          "description": "Enterprise must apply within one year of its listing date on an SME Exchange."
+        }
+      ]
+    }
+  ]
+}

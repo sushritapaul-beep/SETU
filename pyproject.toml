@@ -1,0 +1,21 @@
+# Tooling configuration only — SETU is run as a repo, not installed as a package.
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `from config.settings import ...` resolves
+# when pytest is invoked from anywhere in the tree.
+pythonpath = ["."]
+# Only tests/ runs by default. eval/ hits a real LLM and a live Qdrant, so it is
+# opted into explicitly: pytest eval/deepeval_tests.py -m deepeval
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "deepeval: quality gate requiring a live LLM and a populated Qdrant (excluded by default)",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# E/F = pyflakes+pycodestyle, I = import sorting, UP = pyupgrade, B = bugbear.
+select = ["E", "F", "I", "UP", "B"]

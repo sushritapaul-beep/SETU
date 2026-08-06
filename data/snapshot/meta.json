@@ -1,0 +1,13 @@
+{
+  "created": "2026-08-04T18:00:52.147153+00:00",
+  "embedding_model": "BAAI/bge-m3",
+  "dim": 1024,
+  "count": 36,
+  "schemes": [
+    "Design Scheme Under MSME Innovative Scheme",
+    "Investment Promotion Scheme (IPS) for MSME Sector: Assistance To Small And Medium Enterprises (SME) For Raising Of Capital Through SME Exchange",
+    "MSME Sustainable (ZED) Certification Scheme",
+    "Msme Skill Training And Employment Scheme",
+    "Scheme for Assistance to Micro, Small and Medium Enterprises (MSME): Assistance for Technology Acquisition"
+  ]
+}

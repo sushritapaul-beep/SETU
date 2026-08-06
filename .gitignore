@@ -1,0 +1,58 @@
+# ---------- Secrets ----------
+.env
+.env.local
+*.pem
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ---------- Tooling caches ----------
+.pytest_cache/
+.ruff_cache/
+.deepeval/
+.deepeval-cache.json
+.mypy_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------- Project data ----------
+# Source documents are large and re-fetchable via scripts/ingest.py, so they are
+# reproduced rather than versioned. Keep the directories themselves via .gitkeep.
+data/raw/*.pdf
+data/raw/*.html
+data/processed/*
+!data/**/.gitkeep
+
+# Hand-authored rules and the eval gold set ARE tracked — they are source of truth.
+!data/eligibility_rules.json
+
+# data/snapshot/ IS tracked on purpose: a Hugging Face Space has no Qdrant
+# server, so the index must ship with the code. It is ~200KB, so no Git LFS.
+
+# ---------- Local service state ----------
+qdrant_storage/
+langfuse_storage/
+
+# ---------- Model weights ----------
+# sentence-transformers / HF caches can be many GB.
+.cache/
+models/
+
+# ---------- Editors / OS ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly quality gate at 02:00 UTC (07:30 IST).
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      # Only ruff is installed: linting must not wait on a multi-GB torch download.
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+        continue-on-error: true
+
+  test:
+    name: test (offline pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run offline tests
+        # tests/ is fully mocked, so no Qdrant, no LLM and no model downloads.
+        # -m "not deepeval" is belt-and-braces; testpaths already excludes eval/.
+        run: pytest tests/ -v -m "not deepeval"
+
+  eval-nightly:
+    name: eval (deepeval quality gate)
+    runs-on: ubuntu-latest
+    # Scheduled only: this job spends real API credits, so it must not run on
+    # every push. Use workflow_dispatch to trigger it by hand.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    services:
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install chromium
+      - name: Build the index
+        env:
+          QDRANT_URL: http://localhost:6333
+          HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
+        # The gate needs a populated collection; without this the tests skip
+        # rather than fail, which would hide a real regression.
+        run: python scripts/ingest.py
+      - name: Run quality gate
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          QDRANT_URL: http://localhost:6333
+          HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+        run: pytest eval/deepeval_tests.py -m deepeval -v
+      - name: Upload eval history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-history
+          path: eval/history/
+          if-no-files-found: ignore

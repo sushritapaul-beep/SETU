@@ -1,0 +1,66 @@
+# SETU — pinned dependencies (Python 3.11)
+#
+# Versions marked "PINNED" were specified by the project owner and must not be
+# changed without an explicit decision. Everything else tracks the latest
+# compatible release, with a lower bound where a specific API is required.
+
+# ---------- Agent framework ----------
+langgraph==1.2.9                  # PINNED
+langchain==1.3.11                 # PINNED
+langchain-community
+langchain-text-splitters          # RecursiveCharacterTextSplitter (parent chunks)
+langchain-experimental            # SemanticChunker — ADDED IN PHASE 2, see note below
+langchain-groq                    # primary LLM provider
+langchain-ollama                  # local fallback provider
+langchain-huggingface             # BGE-M3 embeddings via sentence-transformers
+
+# NOTE (Phase 2): langchain-experimental was not in the original stack, but
+# SemanticChunker ships only there — there is no stable-package equivalent.
+
+# ---------- Vector store & retrieval ----------
+qdrant-client>=1.9,<2             # 1.x line; hybrid/native fusion API
+fastembed                         # ADDED IN PHASE 3: supplies the Qdrant/bm25
+                                  # sparse model. Without it, models.Document
+                                  # BM25 inference raises at query time.
+sentence-transformers             # BAAI/bge-m3 + bge-reranker-v2-m3
+
+# ---------- Ingestion ----------
+docling                           # PDF -> structured markdown (primary)
+crawl4ai                          # gov portal crawling; needs a one-time
+                                  # `python -m playwright install chromium`
+pymupdf4llm                       # lightweight PDF fallback when Docling is overkill
+
+# ---------- Indic language layer (Phase 5) ----------
+# fasttext-wheel, not fasttext: it ships prebuilt Windows wheels, so no C++
+# compiler is required. IndicLID's two classifiers are plain fastText models.
+fasttext-wheel
+IndicTransToolkit                 # preprocessing for IndicTrans2
+sentencepiece                     # IndicTrans2's tokenizer; without it the
+                                  # tokenizer fails to load and translation
+                                  # silently falls back to untranslated text
+# PINNED to 4.x: IndicTransToolkit 1.1.1 imports PreTrainedTokenizerBase from a
+# location that moved in transformers 5. sentence-transformers 5.6.1 declares
+# transformers<6.0.0,>=4.41.0, so BGE-M3 and the reranker are unaffected.
+transformers>=4.41,<5
+
+# ---------- Serving ----------
+fastapi
+uvicorn[standard]
+pydantic-settings                 # type-safe config from .env
+# PINNED to 5.x: gradio 6 requires huggingface-hub>=1.16, which conflicts with
+# the transformers<5 pin from Phase 5. Gradio 5 works with hub 0.36.x, so this
+# resolves that conflict; `pip check` is clean.
+gradio>=5,<6
+
+# ---------- Evaluation ----------
+ragas
+deepeval
+
+# ---------- Observability ----------
+langfuse>=4,<5                    # v4 SDK; pairs with the v4 server in docker-compose
+litellm
+
+# ---------- Dev / test ----------
+pytest
+pytest-asyncio
+ruff

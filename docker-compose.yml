@@ -1,0 +1,179 @@
+# SETU local infrastructure.
+#
+# Qdrant starts by default. The Langfuse stack sits behind a compose profile
+# because it pulls ~2GB of images and is not needed until the observability
+# phase:
+#
+#   docker compose up -d                        # Qdrant only
+#   docker compose --profile langfuse up -d     # Qdrant + Langfuse
+#
+# NOTE: Langfuse v4 (matching the pinned v4 Python SDK) requires ClickHouse,
+# Redis and MinIO in addition to Postgres — Postgres alone was only sufficient
+# for Langfuse v2. Adapted from the official compose file at
+# https://github.com/langfuse/langfuse/blob/main/docker-compose.yml
+
+services:
+  # ---------------------------------------------------------------- Qdrant --
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: setu-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST + web dashboard at http://localhost:6333/dashboard
+      - "6334:6334"   # gRPC, used by qdrant-client for faster batch upserts
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    healthcheck:
+      # Qdrant images are distroless-ish; use the bundled binary rather than
+      # assuming curl/wget exist.
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------- Langfuse --
+  langfuse-web:
+    image: langfuse/langfuse:4
+    container_name: setu-langfuse-web
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      # CHANGEME: these are local-development defaults. Regenerate before any
+      # deployment that is reachable from outside your machine.
+      SALT: "setu-local-dev-salt"
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      NEXTAUTH_SECRET: "setu-local-dev-nextauth-secret"
+      NEXTAUTH_URL: http://localhost:3000
+      TELEMETRY_ENABLED: "true"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: myredissecret
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4
+    container_name: setu-langfuse-worker
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Async ingestion worker; shares the web service's configuration verbatim.
+    environment: *langfuse-env
+
+  postgres:
+    image: postgres:17
+    container_name: setu-postgres
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    container_name: setu-clickhouse
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: default
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ulimits:
+      # ClickHouse opens a very large number of files; the Docker default of
+      # 1024 makes it crash under load.
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    container_name: setu-minio
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    entrypoint: sh
+    # Langfuse expects the bucket to already exist, so create it before serving.
+    command: -c 'mkdir -p /data/langfuse && minio server /data --console-address ":9001"'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: setu-redis
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    command: --requirepass myredissecret
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
