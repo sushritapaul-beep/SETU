@@ -9,9 +9,26 @@ Docling fails.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Set SETU_DISABLE_DOCLING=1 to skip Docling entirely and parse with pymupdf4llm.
+#
+# Docling is worth trying because it reconstructs the tables that hold
+# eligibility criteria, but it is heavy and environment-sensitive. On this
+# Windows machine it has failed two different ways — a symlink-privilege error
+# while caching models, then torch inductor attempting a JIT compile with an
+# MSVC toolchain that is not installed. Both failures cost minutes before
+# raising, which is far worse than not trying at all, and pymupdf4llm handled
+# the same documents successfully in every case.
+DISABLE_DOCLING = os.environ.get("SETU_DISABLE_DOCLING", "").lower() in {"1", "true", "yes"}
+
+# Docling pulls in torch, which may try to JIT-compile kernels. Without a C++
+# compiler that attempt fails slowly. Disabling dynamo makes it fail fast, or
+# not attempt at all.
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 
 class DoclingParser:
@@ -44,6 +61,17 @@ class DoclingParser:
         """
         if not path.exists():
             raise FileNotFoundError(f"PDF not found: {path}")
+
+        if DISABLE_DOCLING:
+            logger.debug("Docling disabled by SETU_DISABLE_DOCLING; using pymupdf4llm")
+            markdown = self._parse_with_pymupdf(path)
+            if not markdown.strip():
+                raise RuntimeError(
+                    f"No extractable text in {path} "
+                    "(is it a scanned PDF? try DoclingParser(enable_ocr=True))"
+                )
+            logger.info("Parsed %s with pymupdf4llm (%d chars)", path.name, len(markdown))
+            return markdown
 
         try:
             markdown = self._parse_with_docling(path)

@@ -111,11 +111,25 @@ MIN_ALPHA_RATIO = 0.55
 
 @dataclass(frozen=True)
 class ChunkMetadata:
-    """Provenance attached to every chunk, used later for citation and filtering."""
+    """Provenance attached to every chunk, used later for citation and filtering.
+
+    The provenance fields default to empty so chunk files written before they
+    existed still load. Without them a chunk cannot answer "how stale is this?",
+    which matters when the underlying source is a government rule that changes.
+    """
 
     source_url: str
     scheme_name: str
     chunk_type: str  # "parent" or "child"
+    # --- provenance ---
+    doc_format: str = "html"
+    retrieved_at: str = ""
+    published_at: str | None = None
+    modified_at: str | None = None
+    source_title: str = ""
+    # Hash of the source document, linking a chunk back to the exact text and to
+    # the crawl-state record that captured it.
+    doc_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -191,6 +205,7 @@ class SemanticParentChildChunker:
         text: str,
         source_url: str,
         scheme_name: str,
+        provenance: dict[str, Any] | None = None,
     ) -> list[Chunk]:
         """Split one document into parent chunks and their child chunks.
 
@@ -198,6 +213,9 @@ class SemanticParentChildChunker:
             text: The document body, as markdown.
             source_url: Where the document came from; used for citation.
             scheme_name: Human-readable scheme title.
+            provenance: Optional retrieval metadata (doc_format, retrieved_at,
+                published_at, modified_at, source_title, doc_hash) carried onto
+                every chunk, so a chunk can report how current it is.
 
         Returns:
             Parents and children interleaved, each parent immediately followed by
@@ -231,7 +249,9 @@ class SemanticParentChildChunker:
                     id=parent_id,
                     parent_id=None,
                     text=parent_text,
-                    metadata=ChunkMetadata(source_url, scheme_name, "parent"),
+                    metadata=ChunkMetadata(
+                        source_url, scheme_name, "parent", **(provenance or {})
+                    ),
                 )
             )
 
@@ -248,7 +268,9 @@ class SemanticParentChildChunker:
                         id=self._make_id(source_url, f"child-{parent_id}", child_index, child_text),
                         parent_id=parent_id,
                         text=child_text,
-                        metadata=ChunkMetadata(source_url, scheme_name, "child"),
+                        metadata=ChunkMetadata(
+                            source_url, scheme_name, "child", **(provenance or {})
+                        ),
                     )
                 )
 

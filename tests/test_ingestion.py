@@ -127,6 +127,24 @@ def test_parser_prefers_docling_when_it_succeeds(
     assert DoclingParser().parse_pdf(sample_pdf) == "# Parsed by Docling"
 
 
+def test_docling_can_be_disabled_by_env(
+    sample_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SETU_DISABLE_DOCLING skips Docling entirely instead of failing slowly."""
+    pytest.importorskip("pymupdf4llm")
+
+    import ingestion.parser as parser_module
+
+    monkeypatch.setattr(parser_module, "DISABLE_DOCLING", True)
+
+    def _must_not_run(self: DoclingParser, path: Path) -> str:
+        raise AssertionError("Docling must not be attempted when disabled")
+
+    monkeypatch.setattr(DoclingParser, "_parse_with_docling", _must_not_run)
+
+    assert "SETU" in DoclingParser().parse_pdf(sample_pdf)
+
+
 def test_parser_raises_on_missing_file(tmp_path: Path) -> None:
     """A missing path fails immediately rather than deep inside a PDF library."""
     with pytest.raises(FileNotFoundError):
@@ -335,7 +353,10 @@ def test_chunk_to_dict_is_json_serialisable() -> None:
     record = chunks[0].to_dict()
 
     assert set(record) == {"id", "parent_id", "text", "metadata"}
-    assert set(record["metadata"]) == {"source_url", "scheme_name", "chunk_type"}
+    # Superset, not equality: provenance fields were added later and more may
+    # follow. Pinning the exact set makes every schema addition a test failure.
+    assert set(record["metadata"]) >= {"source_url", "scheme_name", "chunk_type"}
+    assert set(record["metadata"]) >= {"doc_format", "retrieved_at", "doc_hash"}
 
 
 # --------------------------------------------------------------------------

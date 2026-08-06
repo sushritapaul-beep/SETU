@@ -45,6 +45,9 @@ data/processed/*
 # ---------- Local service state ----------
 qdrant_storage/
 langfuse_storage/
+# Crawl frontier and history. Machine-local and regenerable; committing it would
+# make one person's partial crawl everyone else's starting state.
+data/crawl/
 
 # ---------- Model weights ----------
 # sentence-transformers / HF caches can be many GB.
