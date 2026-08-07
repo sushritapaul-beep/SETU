@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-08-07T03:10:20.366331+00:00",
+  "queries": 15,
+  "lang_filter": null,
+  "judge_model": "llama-3.1-8b-instant",
+  "answer_model": "llama-3.3-70b-versatile",
+  "metrics_scored": [
+    "faithfulness",
+    "context_recall"
+  ],
+  "empty_answers": 0,
+  "scores": {
+    "faithfulness": 0.9325,
+    "context_recall": 1.0
+  },
+  "per_query": [
+    {
+      "id": "hi-01",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-02",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-03",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-04",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-05",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-06",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-07",
+      "lang": "hi",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "hi-08",
+      "lang": "hi",
+      "scheme_id": "ds"
+    },
+    {
+      "id": "hi-09",
+      "lang": "hi",
+      "scheme_id": "ds"
+    },
+    {
+      "id": "ta-01",
+      "lang": "ta",
+      "scheme_id": "msme-stes"
+    },
+    {
+      "id": "ta-02",
+      "lang": "ta",
+      "scheme_id": "msme-stes"
+    },
+    {
+      "id": "ta-03",
+      "lang": "ta",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "cm-01",
+      "lang": "hinglish",
+      "scheme_id": "mszcs"
+    },
+    {
+      "id": "cm-02",
+      "lang": "hinglish",
+      "scheme_id": "samsmeata"
+    },
+    {
+      "id": "cm-03",
+      "lang": "hinglish",
+      "scheme_id": "ds"
+    }
+  ]
+}

@@ -63,6 +63,15 @@ from observability.langfuse_setup import build_config, flush  # noqa: E402
 
 logger = logging.getLogger("setu.eval")
 
+# Metric key -> factory. strictness=1 on ResponseRelevancy is required against
+# Groq, which rejects the multi-generation sampling RAGAS requests by default.
+AVAILABLE_METRICS: dict[str, Any] = {
+    "faithfulness": Faithfulness,
+    "answer_relevancy": lambda: ResponseRelevancy(strictness=1),
+    "context_precision": LLMContextPrecisionWithReference,
+    "context_recall": LLMContextRecall,
+}
+
 GOLD_SET = Path(__file__).resolve().parent / "gold_set.jsonl"
 HISTORY_DIR = Path(__file__).resolve().parent / "history"
 # Agent outputs are cached here before judging. Generating them costs ~45 min and
@@ -102,8 +111,32 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run the agent and cache the answers, but do not score them.",
     )
+    parser.add_argument(
+        "--metrics",
+        nargs="*",
+        choices=sorted(AVAILABLE_METRICS),
+        default=None,
+        help=(
+            "Metrics to score. Each one costs a judge call per sample, and the "
+            "judge model is throttled to 6000 tokens/minute, so halving the "
+            "metric count roughly halves the wall time. Defaults to all four."
+        ),
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     return parser.parse_args()
+
+
+def build_metrics(names: list[str] | None) -> list[Any]:
+    """Instantiate the requested RAGAS metrics.
+
+    Args:
+        names: Metric keys to build. None builds all of them.
+
+    Returns:
+        Metric instances ready to pass to evaluate().
+    """
+    selected = names or sorted(AVAILABLE_METRICS)
+    return [AVAILABLE_METRICS[name]() for name in selected]
 
 
 def load_gold_set(path: Path, lang: str | None, limit: int | None) -> list[dict[str, Any]]:
@@ -272,19 +305,15 @@ def main() -> int:
 
     run_config = RunConfig(max_workers=1, max_retries=10, max_wait=120, timeout=600)
 
+    metrics = build_metrics(args.metrics)
+    logger.info(
+        "Scoring %d samples on %d metrics (%d judge calls)",
+        len(samples), len(metrics), len(samples) * len(metrics),
+    )
+
     scores = evaluate(
         dataset=dataset,
-        metrics=[
-            Faithfulness(),
-            # strictness=1 is REQUIRED against Groq. ResponseRelevancy defaults
-            # to sampling 3 generations (n=3) for self-consistency, but Groq's
-            # API rejects anything above n=1 with
-            # 400 "'n' : number must be at most 1", so the metric fails outright
-            # and returns NaN rather than a score.
-            ResponseRelevancy(strictness=1),
-            LLMContextPrecisionWithReference(),
-            LLMContextRecall(),
-        ],
+        metrics=metrics,
         llm=llm,
         embeddings=embeddings,
         run_config=run_config,
@@ -302,6 +331,8 @@ def main() -> int:
         # runs scored by different models would be meaningless.
         "judge_model": args.judge_model,
         "answer_model": get_settings().GROQ_MODEL,
+        # Recorded so a partial run is never mistaken for a full one.
+        "metrics_scored": args.metrics or sorted(AVAILABLE_METRICS),
         "empty_answers": sum(1 for s in samples if not s["response"].strip()),
         "scores": summary,
         "per_query": [
