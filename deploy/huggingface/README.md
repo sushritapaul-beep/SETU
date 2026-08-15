@@ -33,8 +33,11 @@ doesn't — it deliberately builds from the *repo* root (not `ui/`) to reach
 sake. Rather than moving those three (which would break the documented local
 dev commands in `README.md`/`docs/DEMO.md` and `ui/chainlit_app.py`'s own
 docstring, all of which run `chainlit run ui/chainlit_app.py` from the repo
-root), `ui/` here holds a self-contained variant that expects them
-copied alongside it instead. Nothing in the working tree changes.
+root), `deploy/ui-standalone/Dockerfile` holds a self-contained variant that
+expects them copied alongside it instead. Nothing in the working tree
+changes. `gcloud run deploy --source` has the identical constraint (see
+`deploy/gcloud/README.md`), so this variant is shared by both targets
+rather than duplicated per provider.
 
 ## `api/` — push the repo as-is
 
@@ -64,7 +67,7 @@ rm -rf /tmp/setu-ui-space && mkdir -p /tmp/setu-ui-space
 cp ui/chainlit_app.py ui/requirements.txt /tmp/setu-ui-space/
 cp -r .chainlit public /tmp/setu-ui-space/
 cp chainlit.md /tmp/setu-ui-space/
-cp deploy/huggingface/ui/Dockerfile deploy/huggingface/ui/README.md /tmp/setu-ui-space/
+cp deploy/ui-standalone/Dockerfile deploy/huggingface/ui/README.md /tmp/setu-ui-space/
 cd /tmp/setu-ui-space
 git init -b main && git add -A && git commit -m "Deploy setu-ui"
 git remote add space https://huggingface.co/spaces/<your-username>/setu-ui
