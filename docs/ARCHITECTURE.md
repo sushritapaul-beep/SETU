@@ -280,6 +280,14 @@ The Chainlit UI (`ui/chainlit_app.py`) is a thin HTTP client over
 can restart independently of the API and deploys as its own, much smaller,
 container (`ui/Dockerfile`, `ui/requirements.txt`).
 
+Both containers deploy to Render as two free-tier web services defined in
+[`render.yaml`](../render.yaml); the full runbook, including a real bug this
+caught (the API `Dockerfile` hardcoded port 8000 instead of binding
+Render's `$PORT`, and `retrieval/vectorstore.py`'s `from ingestion.chunker
+import Chunk` was never actually reachable in the API image because
+`Dockerfile` never copied `ingestion/`), is in
+[`docs/DEPLOY.md`](DEPLOY.md).
+
 ---
 
 ## 8. Evaluation

@@ -16,7 +16,15 @@ langchain-ollama                  # local fallback provider
 
 # ---------- Vector store & retrieval ----------
 qdrant-client>=1.9,<2
-fastembed                         # supplies the Qdrant BM25 sparse model
+fastembed                         # supplies the Qdrant BM25 sparse model;
+                                   # also the transitive source of
+                                   # huggingface_hub, which indic/lang_detect.py
+                                   # needs directly (IndicLID model download) —
+                                   # not pinned separately since fastembed
+                                   # already guarantees it
+langchain-text-splitters          # RecursiveCharacterTextSplitter — retrieval/
+                                   # vectorstore.py imports the Chunk dataclass
+                                   # from ingestion/chunker.py, which needs this
 
 # ---------- Indic language layer ----------
 # fasttext-wheel, not fasttext: prebuilt Windows wheels, no C++ compiler

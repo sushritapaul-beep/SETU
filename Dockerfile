@@ -30,6 +30,10 @@ COPY indic/ indic/
 COPY observability/ observability/
 COPY retrieval/ retrieval/
 COPY data/eligibility_rules.json data/eligibility_rules.json
+# retrieval/vectorstore.py imports the Chunk dataclass from here. Only this
+# one file, not the whole package — ingestion/scraper.py pulls in crawl4ai
+# and Playwright, which this image has no other reason to install.
+COPY ingestion/__init__.py ingestion/chunker.py ingestion/
 
 # Own the tree as the runtime user so caches and downloads are writable.
 RUN chown -R setu:setu /app /home/setu
@@ -37,7 +41,12 @@ USER setu
 
 EXPOSE 8000
 
+# Render assigns $PORT at runtime (default 10000, not 8000) and routes
+# traffic to it regardless of EXPOSE, so the process must bind to whatever
+# it's set to. Shell-form CMD/HEALTHCHECK so that expansion actually happens
+# — the previous exec-form CMD hardcoded 8000 and would have been
+# unreachable on Render, which routes to $PORT, not the container's default.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD curl -fsS "http://localhost:${PORT:-8000}/health" || exit 1
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}
