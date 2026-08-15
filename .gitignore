@@ -40,9 +40,6 @@ data/feedback.sqlite3
 # Hand-authored rules and the eval gold set ARE tracked — they are source of truth.
 !data/eligibility_rules.json
 
-# data/snapshot/ IS tracked on purpose: a Hugging Face Space has no Qdrant
-# server, so the index must ship with the code. It is ~200KB, so no Git LFS.
-
 # ---------- Local service state ----------
 qdrant_storage/
 langfuse_storage/
@@ -60,3 +57,10 @@ models/
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---------- Local AI-tooling state ----------
+# Claude Code session/skill/scratch artifacts. Machine- and session-local,
+# not part of the project.
+.agents/
+.claude/
+.files/
