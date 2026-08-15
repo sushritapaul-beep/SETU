@@ -39,6 +39,19 @@ COPY ingestion/__init__.py ingestion/chunker.py ingestion/
 RUN chown -R setu:setu /app /home/setu
 USER setu
 
+# Bake IndicLID's two fastText classifiers into the image, into the same
+# cache path hf_hub_download() reads at runtime (~/.cache/huggingface/hub
+# under this user). Otherwise the first non-English query downloads them
+# over the network inline — real, measured latency on a cold container.
+RUN python -c "from huggingface_hub import hf_hub_download as d; \
+    d('ai4bharat/IndicLID-FTN', 'model_baseline_roman.bin'); \
+    d('ai4bharat/IndicLID-FTR', 'model_baseline_roman.bin')"
+
+# Both models are now guaranteed cached, so skip the network round-trip
+# hf_hub_download() would otherwise make to check for a newer revision before
+# falling back to the local file — pure latency, same bytes either way.
+ENV HF_HUB_OFFLINE=1
+
 EXPOSE 8000
 
 # Render assigns $PORT at runtime (default 10000, not 8000) and routes

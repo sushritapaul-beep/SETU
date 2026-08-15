@@ -214,3 +214,16 @@ class IndicLanguageDetector:
     def clear_cache(cls) -> None:
         """Drop cached models so tests and long-running processes can free memory."""
         cls._model_cache.clear()
+
+    @classmethod
+    def warm(cls) -> None:
+        """Eagerly load both fastText classifiers.
+
+        Loading is otherwise lazy on first ``detect()`` call, which means the
+        first real user query pays the download-and-load cost (and its
+        transient memory spike) inline. Called once at process startup so
+        that cost lands before the service reports healthy instead of on a
+        user's request.
+        """
+        cls._load(FTN_REPO)
+        cls._load(FTR_REPO)

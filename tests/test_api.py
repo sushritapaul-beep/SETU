@@ -57,10 +57,19 @@ class _FakeGraph:
         yield {"self_critique": self.state}
 
 
+class _FakeDetector:
+    """Stands in for IndicLanguageDetector so startup never downloads a model."""
+
+    @staticmethod
+    def warm() -> None:
+        pass
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """A TestClient whose app has a stubbed graph and no Langfuse."""
     monkeypatch.setattr(api_main, "build_graph", lambda: _FakeGraph())
+    monkeypatch.setattr(api_main, "IndicLanguageDetector", _FakeDetector)
     # Tracing off: a real handler would try to reach a Langfuse server.
     monkeypatch.setattr(langfuse_setup, "get_callback_handler", lambda: None)
     langfuse_setup.get_langfuse_client.cache_clear()

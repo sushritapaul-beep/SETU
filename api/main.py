@@ -33,6 +33,7 @@ from api.schemas import (
     StreamEvent,
 )
 from config.settings import get_settings
+from indic.lang_detect import IndicLanguageDetector
 from observability.langfuse_setup import build_config, flush
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Compiled once: rebuilding per request would discard the checkpointer and
     # reload models on every call.
     app.state.graph = build_graph()
+    # IndicLID's fastText models otherwise load on the first non-English
+    # query instead of at startup, so that request pays the download+load
+    # latency (and memory spike) that should happen before /health goes live.
+    IndicLanguageDetector.warm()
     logger.info("SETU agent graph compiled")
     yield
     flush()
