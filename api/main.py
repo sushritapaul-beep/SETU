@@ -7,8 +7,11 @@ can show progress instead of a spinner for the ~10s a full run takes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import queue
 import secrets
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -268,9 +271,13 @@ async def query(request: QueryRequest) -> QueryResponse:
         state["lang"] = request.lang
 
     try:
-        # The graph is synchronous and CPU-bound; ainvoke lets the event loop
-        # serve other requests while it runs.
-        final = await app.state.graph.ainvoke(state, config=config)
+        # Every graph node is a plain sync function making blocking httpx
+        # calls (Jina, Azure, Groq) — ainvoke() does not make that async, it
+        # runs those blocking calls directly on this event loop, freezing
+        # every other in-flight request (including /health) for as long as
+        # this one takes. to_thread runs the whole invocation on a worker
+        # thread instead, so the event loop stays free to serve others.
+        final = await asyncio.to_thread(app.state.graph.invoke, state, config)
     except Exception as exc:  # noqa: BLE001 - surface as a clean 503
         logger.exception("Agent run failed")
         raise HTTPException(status_code=503, detail=f"Agent unavailable: {exc}") from exc
@@ -300,10 +307,36 @@ async def _event_stream(request: QueryRequest) -> AsyncIterator[str]:
 
     merged: dict[str, Any] = {}
     try:
-        # stream_mode="updates" yields {node_name: state_delta} per completed
-        # node, which is exactly the granularity the UI wants.
-        async for chunk in app.state.graph.astream(state, config=config, stream_mode="updates"):
-            for node_name, delta in chunk.items():
+        # Every node is a plain sync function making blocking httpx calls, so
+        # astream() runs them directly on this event loop the same way
+        # ainvoke() does for /query — it does not make them non-blocking, it
+        # just freezes every other in-flight request (including /health) for
+        # as long as each node takes. The sync graph.stream() generator runs
+        # on a worker thread instead; run_in_executor(q.get) waits for its
+        # next item without blocking the loop, so other requests keep moving
+        # between chunks.
+        chunks: queue.SimpleQueue[tuple[str, Any] | None] = queue.SimpleQueue()
+
+        def _run_graph() -> None:
+            try:
+                for chunk in app.state.graph.stream(state, config=config, stream_mode="updates"):
+                    chunks.put(("chunk", chunk))
+            except Exception as exc:  # noqa: BLE001 - relayed to the consumer below
+                chunks.put(("error", exc))
+            finally:
+                chunks.put(None)
+
+        threading.Thread(target=_run_graph, daemon=True).start()
+
+        loop = asyncio.get_running_loop()
+        while True:
+            item = await loop.run_in_executor(None, chunks.get)
+            if item is None:
+                break
+            kind, payload = item
+            if kind == "error":
+                raise payload
+            for node_name, delta in payload.items():
                 if isinstance(delta, dict):
                     merged.update(delta)
                 yield frame(

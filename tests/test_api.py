@@ -41,13 +41,13 @@ class _FakeGraph:
         self.fail = fail
         self.configs: list[dict[str, Any]] = []
 
-    async def ainvoke(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def invoke(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         self.configs.append(config)
         if self.fail:
             raise RuntimeError("agent exploded")
         return self.state
 
-    async def astream(self, state: dict[str, Any], config: dict[str, Any], stream_mode: str):
+    def stream(self, state: dict[str, Any], config: dict[str, Any], stream_mode: str):
         self.configs.append(config)
         if self.fail:
             raise RuntimeError("agent exploded")
