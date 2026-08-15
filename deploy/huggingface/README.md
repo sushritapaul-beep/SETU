@@ -1,10 +1,21 @@
 # Hugging Face Spaces deployment configs
 
-Free-tier alternative to Render: HF Spaces CPU Basic gives 16GB RAM / 2 vCPU
-per Space, free, no card required — vs. Render free's 512MB / 0.1 vCPU, which
-`docs/DEPLOYMENT_HANDOFF.md` §4/§5 measured as too small to run `setu-api`
-without OOM-killing on the IndicLID model load. See that doc for the full
-comparison; this directory holds the config each Space needs.
+**Correction, verified against HF's own docs:** this is *not* a free-tier
+option. [Spaces Overview](https://huggingface.co/docs/hub/en/spaces-overview)
+states plainly: "Gradio and Docker Spaces run on compute and require a paid
+plan to create: PRO for personal accounts... Static Spaces are free for
+everyone." CPU Basic hardware itself is $0/hour, but creating a Docker Space
+at all requires an HF PRO subscription — **$9/month**, per
+[huggingface.co/pricing](https://huggingface.co/pricing) — for the whole
+account, covering both Spaces below. An earlier pass at this research relied
+on secondary sources that got this wrong; this has now been checked against
+HF's own documentation directly.
+
+Still likely the cheapest way to clear `setu-api`'s ~1.4GB RAM requirement
+(`docs/DEPLOYMENT_HANDOFF.md` §4): $9/mo for 16GB/2vCPU × 2 Spaces beats
+Render's Standard plan (~$25/mo, and that's for `setu-api` alone). But it is
+a real recurring cost, not a free option — worth confirming you want to pay
+it before pushing either Space.
 
 ## Why two separate directories, not two `render.yaml`-style entries
 
