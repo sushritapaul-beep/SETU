@@ -56,3 +56,5 @@ services:
     envVars:
       - key: SETU_API_URL
         sync: false
+      - key: SETU_API_KEY
+        sync: false

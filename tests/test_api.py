@@ -206,6 +206,30 @@ def test_configured_api_key_is_required(monkeypatch: pytest.MonkeyPatch) -> None
         assert test_client.get("/health").status_code == 200
 
 
+def test_rate_limit_prefers_client_id_header_over_source_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxying caller (the UI) can identify each visitor individually.
+
+    Without this, every visitor's request reaches the API from the same
+    source (the UI's own connection), so IP-based limiting would treat every
+    visitor of a deployed demo as one shared caller.
+    """
+    limiter = api_main.RateLimiter(limit=1, window_seconds=60)
+    monkeypatch.setattr(api_main, "rate_limiter", limiter)
+
+    class _FakeClient:
+        host = "10.0.0.1"  # same source IP for both calls below
+
+    class _FakeRequest:
+        client = _FakeClient()
+
+    # Two distinct X-Client-Id values from the same source IP are two
+    # distinct callers, not one exhausting a shared limit.
+    api_main.enforce_rate_limit(_FakeRequest(), x_client_id="visitor-a")
+    api_main.enforce_rate_limit(_FakeRequest(), x_client_id="visitor-b")
+
+
 def test_rate_limiter_rejects_bursts_then_recovers() -> None:
     """A caller over its limit gets 429 with Retry-After; others are unaffected."""
     from fastapi import HTTPException

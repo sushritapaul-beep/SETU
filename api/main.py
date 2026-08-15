@@ -158,16 +158,28 @@ rate_limiter = RateLimiter(
 )
 
 
-def enforce_rate_limit(request: Request) -> None:
+def enforce_rate_limit(request: Request, x_client_id: str = Header(default="")) -> None:
     """Apply the per-client rate limit to a request.
 
+    Prefers X-Client-Id over the source IP when present. The Chainlit UI is a
+    server-side proxy — every visitor's query arrives at this API from the
+    UI's own connection, so request.client.host is the UI's address for
+    everyone, and IP-based limiting would collapse into one shared budget
+    across every visitor of the deployed demo instead of a per-visitor one.
+    The UI sends its own per-browser-session id here instead. A caller who
+    already holds a valid API_KEY could still evade the limit by rotating
+    this header, same as they always could by rotating source IPs — this
+    protects the common case (one visitor's own traffic, or one runaway UI
+    session), not against a determined credentialed abuser.
+
     Args:
-        request: The incoming request, used for the client address.
+        request: The incoming request, used for the client address fallback.
+        x_client_id: Optional caller-supplied identity (X-Client-Id header).
 
     Raises:
         HTTPException: 429 when the caller is over its limit.
     """
-    client = request.client.host if request.client else "unknown"
+    client = x_client_id or (request.client.host if request.client else "unknown")
     rate_limiter.check(client)
 
 

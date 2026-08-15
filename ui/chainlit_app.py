@@ -25,11 +25,19 @@ import chainlit as cl
 import httpx
 from chainlit.data.base import BaseDataLayer
 from chainlit.input_widget import Select
-from chainlit.types import Feedback, PageInfo, PaginatedResponse, Pagination, ThreadDict, ThreadFilter
+from chainlit.types import (
+    Feedback,
+    PageInfo,
+    PaginatedResponse,
+    Pagination,
+    ThreadDict,
+    ThreadFilter,
+)
 
 logger = logging.getLogger("setu.ui")
 
 API_URL = os.environ.get("SETU_API_URL", "http://localhost:8000")
+API_KEY = os.environ.get("SETU_API_KEY", "")
 REQUEST_TIMEOUT = 300.0  # a full run with translation + retries can take minutes
 
 # Citation markers like "[39f4b029]" are internal chunk ids the generator
@@ -167,7 +175,9 @@ class SetuDataLayer(BaseDataLayer):
     async def delete_thread(self, thread_id: str) -> None:
         return None
 
-    async def list_threads(self, pagination: Pagination, filters: ThreadFilter) -> PaginatedResponse:
+    async def list_threads(
+        self, pagination: Pagination, filters: ThreadFilter
+    ) -> PaginatedResponse:
         return PaginatedResponse(
             pageInfo=PageInfo(hasNextPage=False, startCursor=None, endCursor=None), data=[]
         )
@@ -264,7 +274,11 @@ def _eligibility_markdown(eligibility: dict[str, Any]) -> str:
         Markdown summarising the verdict, failed rules, and missing fields.
     """
     verdict = "✅ Eligible" if eligibility.get("eligible") else "❌ Not confirmed"
-    lines = [f"**{verdict}** — {eligibility.get('scheme_name', '')}", "", eligibility.get("reason", "")]
+    lines = [
+        f"**{verdict}** — {eligibility.get('scheme_name', '')}",
+        "",
+        eligibility.get("reason", ""),
+    ]
     if eligibility.get("failed_rules"):
         lines += ["", "**Failed criteria**"]
         lines += [f"- {rule['description']}" for rule in eligibility["failed_rules"]]
@@ -273,7 +287,9 @@ def _eligibility_markdown(eligibility: dict[str, Any]) -> str:
     # An authoritative-sounding wrong eligibility verdict is a worse failure
     # than an uncertain-sounding right one — this is a deterministic engine,
     # not legal advice, and rules can change after the corpus was indexed.
-    lines += ["", "*Rules can change — confirm with your local DIC or Udyam office before applying.*"]
+    lines += [
+        "", "*Rules can change — confirm with your local DIC or Udyam office before applying.*"
+    ]
     return "\n".join(lines)
 
 
@@ -299,7 +315,10 @@ def _sources_markdown(citations: list[dict[str, Any]]) -> str:
     lines = []
     for url, name in seen.items():
         domain = urlparse(url).netloc
-        lines.append(f"- [{name}]({url}) — official source: `{domain}`" if domain else f"- [{name}]({url})")
+        if domain:
+            lines.append(f"- [{name}]({url}) — official source: `{domain}`")
+        else:
+            lines.append(f"- [{name}]({url})")
     return "\n".join(lines)
 
 
@@ -320,14 +339,36 @@ async def main(message: cl.Message) -> None:
     if language != "auto":
         payload["lang"] = language
 
+    # X-Client-Id lets the API rate-limit per browser session instead of per
+    # source IP — every visitor's request arrives at the API from this same
+    # server, so IP-based limiting would see one caller, not many.
+    headers = {"X-Client-Id": session_id} if session_id else {}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+
     status = cl.Message(content="Thinking...")
     await status.send()
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            async with client.stream("POST", f"{API_URL}/query/stream", json=payload) as response:
+            # A GET to /health first, ignoring the result: on a platform where
+            # a sleeping free-tier instance spins up reliably on GET/WebSocket
+            # traffic but has been unreliable waking on POST alone, this
+            # guarantees the wake trigger is the method that's known to work,
+            # before the POST below needs the API to already be listening.
+            # Harmless and cheap if the API was already warm.
+            try:
+                await client.get(f"{API_URL}/health", timeout=REQUEST_TIMEOUT)
+            except httpx.HTTPError:
+                pass
+
+            async with client.stream(
+                "POST", f"{API_URL}/query/stream", json=payload, headers=headers
+            ) as response:
                 if response.status_code != 200:
-                    status.content = f"⚠️ The SETU API returned {response.status_code}. Is it running?"
+                    status.content = (
+                        f"⚠️ The SETU API returned {response.status_code}. Is it running?"
+                    )
                     await status.update()
                     return
 
