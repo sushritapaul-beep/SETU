@@ -10,37 +10,44 @@ question producing a cited answer.
 Show the three things that make SETU different, in this order:
 
 1. **A Devanagari question being typed** — proves multilingual input is real.
-2. **The progress trail** — `Detecting language → Translating your question →
-   Searching scheme documents → …`. This is the agent visibly working, and it
-   fills the seconds while the pipeline runs.
-3. **The answer with its Sources panel expanded** — proves the citations are
-   real links to myScheme, not decoration.
+   A starter prompt click works too and is faster to capture, but typing at
+   least once shows the input is real, not a canned example.
+2. **The status line advancing** — one line that rewrites itself in place
+   ("Understanding your question…" → "Searching official sources…" →
+   "Writing your answer…"), not a stack of separate steps. This is the agent
+   visibly working, and it fills the seconds while the pipeline runs.
+3. **The finished answer, with its Sources card already visible underneath** —
+   no click needed, it renders automatically — proving the citations are real
+   links to myScheme, not decoration.
 
 If an eligibility query fits in the time budget, prefer it: the ✅/❌ verdict
-panel is the most distinctive thing in the product.
+card is the most distinctive thing in the product.
 
 ## Setup before recording
 
+Every backing service is free-tier cloud, so there's no local infrastructure
+to start — just the two processes:
+
 ```powershell
 # Terminal 1
-docker compose up -d
-uvicorn api.main:app --reload
+uvicorn api.main:app --reload --port 8000
 
 # Terminal 2
-python ui/app.py
+chainlit run ui/chainlit_app.py --port 8001
 ```
 
-**Warm the models first.** Ask one throwaway question and wait for it to finish.
-The first query downloads and loads ~6 GB; recording a cold start would produce
-45 seconds of nothing.
+**Warm the connection first.** Ask one throwaway question and wait for it to
+finish. Nothing downloads or loads locally anymore (embeddings, reranking,
+and translation are all API calls), but the first request still pays cold
+DNS/TLS setup cost against those APIs — recording a cold first request would
+add a few unrepresentative seconds.
 
 Then:
 - Set the browser to **1280×800** and zoom to ~110% so text is readable when the
   GIF is scaled down in the README.
 - Use light mode. Dark screenshots lose detail after GIF colour quantisation.
-- Clear the chat so the recording starts on an empty conversation.
-- Close other apps — the pipeline needs headroom, and a memory stall mid-record
-  wastes the take.
+- Clear the chat so the recording starts on an empty conversation — the
+  starter prompts should be visible on the empty screen.
 
 ## The query to use
 
@@ -54,9 +61,9 @@ is slow and eats the budget. Expect roughly:
 | Segment | Seconds |
 |---|---|
 | Query appears, send | 0–2 |
-| Progress trail advancing | 2–9 |
-| Answer renders | 9–12 |
-| Click Sources, panel expands | 12–15 |
+| Status line advancing | 2–9 |
+| Answer renders, Sources card visible | 9–13 |
+| Hold on the finished answer | 13–15 |
 
 ## Tools
 
