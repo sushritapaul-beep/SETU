@@ -39,6 +39,20 @@ printf '%s' "$QDRANT_API_KEY"      | gcloud secrets versions add setu-qdrant-api
 printf '%s' "$LANGFUSE_SECRET_KEY" | gcloud secrets versions add setu-langfuse-secret-key --data-file=-
 printf '%s' "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
   | gcloud secrets versions add setu-api-key --data-file=-
+
+# `--set-secrets` (step 1) does NOT grant read access on its own — confirmed
+# against Cloud Run's secrets docs: the runtime service account needs
+# roles/secretmanager.secretAccessor explicitly, or the deploy fails when
+# Cloud Run tries to resolve the reference. Granted once, at project level,
+# to the default Compute Engine service account Cloud Run uses unless
+# --service-account overrides it. Fine for a single-owner demo project;
+# swap for a per-secret `gcloud secrets add-iam-policy-binding` loop if
+# tighter scoping ever matters.
+PROJECT_ID=$(gcloud config get-value project)
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
 ```
 
 `setu-api-key` is shared: it becomes both `setu-api`'s `API_KEY` and
@@ -76,6 +90,15 @@ traffic.
 `ALLOWED_ORIGINS` is a placeholder — `setu-ui`'s real URL isn't known until
 step 3, same two-step reason as Render (`docs/DEPLOY.md` §3).
 
+**If `ALLOWED_ORIGINS` (or any value) ever needs its own comma** — e.g.
+multiple allowed origins, which `config/settings.py` supports as a
+comma-separated string — `--set-env-vars`' plain `KEY=val,KEY=val` syntax
+breaks, since gcloud has no way to tell that inner comma apart from the
+next `KEY=`. Confirmed via gcloud's own escaping docs: switch the whole
+flag to a different delimiter with the caret syntax instead, e.g.
+`--set-env-vars "^;^LLM_PROVIDER=groq;...;ALLOWED_ORIGINS=https://a.example,https://b.example"`
+(semicolons between vars, real commas now safe inside values).
+
 Cloud Run prints the service URL when this finishes:
 `https://setu-api-<hash>-uc.a.run.app`.
 
@@ -93,12 +116,26 @@ self-contained Dockerfile at `deploy/ui-standalone/Dockerfile` (see
 `deploy/huggingface/README.md` for why that variant exists) instead of a
 second copy.
 
+**Cloud Build's source upload silently drops hidden (dot-prefixed)
+directories by default** — confirmed against a real-world report of the
+identical failure (a Next.js `.next/` build directory disappearing from a
+`gcloud run deploy --source` upload, same fix applied there). `.chainlit/`
+is exactly this kind of directory, and the Dockerfile's `COPY .chainlit/
+.chainlit/` would silently build against a missing directory otherwise —
+not caught by any of the local Docker validation earlier in this repo's
+history, since that never went through Cloud Build's upload step. Countered
+with an explicit `.gcloudignore` re-inclusion pattern, the same fix used in
+that report. Not something this session could verify end-to-end without a
+live GCP deploy — worth watching the build log's file list on the first
+real deploy to confirm `.chainlit/` actually made it in.
+
 ```sh
 rm -rf /tmp/setu-ui-src && mkdir -p /tmp/setu-ui-src
 cp ui/chainlit_app.py ui/requirements.txt /tmp/setu-ui-src/
 cp -r .chainlit public /tmp/setu-ui-src/
 cp chainlit.md /tmp/setu-ui-src/
 cp deploy/ui-standalone/Dockerfile /tmp/setu-ui-src/
+printf '!.chainlit/\n!.chainlit/**\n' > /tmp/setu-ui-src/.gcloudignore
 
 gcloud run deploy setu-ui \
   --source /tmp/setu-ui-src \
