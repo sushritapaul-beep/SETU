@@ -14,7 +14,11 @@ NO_ENV_FILE = {"_env_file": None}
 
 def test_defaults_apply_when_environment_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty environment yields the documented defaults, not an error."""
-    for var in ("LLM_PROVIDER", "GROQ_API_KEY", "QDRANT_URL", "LOG_LEVEL"):
+    # ingestion.scraper imports crawl4ai, which calls load_dotenv() at import
+    # time and leaks the real .env into os.environ for the rest of the process —
+    # every var asserted below must be cleared, or this test's result depends on
+    # which other test modules happened to run first.
+    for var in ("LLM_PROVIDER", "GROQ_API_KEY", "QDRANT_URL", "QDRANT_COLLECTION", "LOG_LEVEL"):
         monkeypatch.delenv(var, raising=False)
 
     settings = Settings(**NO_ENV_FILE)
@@ -22,8 +26,8 @@ def test_defaults_apply_when_environment_is_empty(monkeypatch: pytest.MonkeyPatc
     assert settings.LLM_PROVIDER == "groq"
     assert settings.GROQ_API_KEY is None
     assert settings.QDRANT_URL == "http://localhost:6333"
-    assert settings.QDRANT_COLLECTION == "setu_schemes"
-    assert settings.EMBEDDING_MODEL == "BAAI/bge-m3"
+    assert settings.QDRANT_COLLECTION == "setu-schemes"
+    assert settings.EMBEDDING_MODEL == "jina-embeddings-v3"
     assert settings.EMBEDDING_DIM == 1024
     assert settings.LLM_TEMPERATURE == 0.0
     assert settings.LOG_LEVEL == "INFO"
@@ -33,7 +37,6 @@ def test_dummy_environment_variables_are_loaded(monkeypatch: pytest.MonkeyPatch)
     """Values set in the environment override defaults and are typed correctly."""
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv("GROQ_API_KEY", "gsk_dummy_key_for_tests")
-    monkeypatch.setenv("HUGGINGFACE_TOKEN", "hf_dummy_token_for_tests")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-dummy")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-dummy")
     monkeypatch.setenv("QDRANT_URL", "http://qdrant.internal:6333")

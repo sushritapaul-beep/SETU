@@ -155,18 +155,18 @@ def test_stream_emits_node_events_then_final(client: TestClient) -> None:
     assert payload["citations"][0]["label"] == "39f4b029"
 
 
-def test_cors_allows_the_gradio_origin(client: TestClient) -> None:
-    """The UI on :7860 is a different origin and must be permitted."""
+def test_cors_allows_the_configured_ui_origin(client: TestClient) -> None:
+    """The Chainlit UI runs as a separate process/deployment and must be permitted."""
     response = client.options(
         "/query",
         headers={
-            "Origin": "http://localhost:7860",
+            "Origin": "http://localhost:8001",
             "Access-Control-Request-Method": "POST",
         },
     )
 
     assert response.status_code in {200, 204}
-    assert response.headers["access-control-allow-origin"] == "http://localhost:7860"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:8001"
 
 
 # --------------------------------------------------------------------------
@@ -252,6 +252,89 @@ def test_build_config_carries_thread_id_and_prompt_versions(
     assert "setu" in config["tags"]
     # No handler means no callbacks key, so LangGraph runs untraced.
     assert "callbacks" not in config
+
+
+def test_build_config_sets_langfuse_trace_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session, tags and name use the keys Langfuse actually reads.
+
+    A plain "session_id" metadata key is inert: it leaves the Sessions view
+    empty while looking correct in the config dict.
+    """
+    monkeypatch.setattr(langfuse_setup, "get_callback_handler", lambda: None)
+
+    config, _ = langfuse_setup.build_config(
+        "sess-9", "a question", extra_tags=["endpoint:query"], user_id="user-7"
+    )
+
+    metadata = config["metadata"]
+    assert metadata["langfuse_session_id"] == "sess-9"
+    assert metadata["langfuse_user_id"] == "user-7"
+    assert set(metadata["langfuse_tags"]) == {"setu", "endpoint:query"}
+    # A name that identifies the operation, not the run.
+    assert config["run_name"] == "answer-scheme-question"
+
+
+def test_build_config_omits_user_id_when_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An anonymous run must not report an empty string as a user."""
+    monkeypatch.setattr(langfuse_setup, "get_callback_handler", lambda: None)
+
+    config, _ = langfuse_setup.build_config("sess-1", "q")
+
+    assert "langfuse_user_id" not in config["metadata"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("my aadhaar is 1234 5678 9012", "my aadhaar is [AADHAAR]"),
+        ("aadhaar 123456789012 ok", "aadhaar [AADHAAR] ok"),
+        ("pan ABCDE1234F please", "pan [PAN] please"),
+        ("call 9876543210", "call [PHONE]"),
+        ("call +91 9876543210", "call [PHONE]"),
+        ("mail me at ram.kumar@example.co.in", "mail me at [EMAIL]"),
+    ],
+)
+def test_mask_pii_redacts_direct_identifiers(raw: str, expected: str) -> None:
+    """Identifiers are redacted before anything reaches the trace store."""
+    assert langfuse_setup.mask_pii(data=raw) == expected
+
+
+def test_mask_pii_keeps_eligibility_attributes() -> None:
+    """Income, category and turnover survive: they make a verdict debuggable.
+
+    Masking these would remove exactly the fields needed to explain why the
+    rule checker returned the verdict it did, and none identifies a person.
+    """
+    profile = {"annual_income": 250000, "category": "OBC", "turnover": 5000000}
+
+    assert langfuse_setup.mask_pii(data=profile) == profile
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        # A UUID's middle segments are often all digits and match 4-4-4 exactly.
+        "self_critique:88a7a294-4029-4771-8299-939abaabe47c",
+        "run-1234-5678-9012-abc",
+        "chunk_0536b788",
+    ],
+)
+def test_mask_pii_leaves_internal_identifiers_intact(identifier: str) -> None:
+    """Correlation ids must survive masking.
+
+    Redacting part of a checkpoint namespace or run id protects nothing and
+    breaks the ids used to tie observations in a trace back together.
+    """
+    assert langfuse_setup.mask_pii(data=identifier) == identifier
+
+
+def test_mask_pii_recurses_into_nested_structures() -> None:
+    """Nested payloads are masked too, not just top-level strings."""
+    data = {"messages": [{"content": "pan ABCDE1234F"}]}
+
+    assert langfuse_setup.mask_pii(data=data) == {"messages": [{"content": "pan [PAN]"}]}
 
 
 def test_tracing_disabled_without_keys(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Anchor all paths to the repo root derived from this file, so they resolve
@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     LLM_PROVIDER: LLMProvider = "groq"
 
     GROQ_API_KEY: SecretStr | None = None
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    # llama-3.3-70b-versatile is deprecated by Groq on 2026-08-16. qwen3.6-27b
+    # scores higher on independent reasoning benchmarks than the other
+    # Groq-suggested replacement (gpt-oss-120b) and — unlike gpt-oss-120b on
+    # Groq's stack — actually honours reasoning_effort="none", which matters
+    # here: _parse_json()'s greedy regex would misparse leaked reasoning text.
+    GROQ_MODEL: str = "qwen/qwen3.6-27b"
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.1:8b"
@@ -53,9 +58,17 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = Field(default=60.0, gt=0)
 
     # ---------- Embeddings & reranking ----------
-    HUGGINGFACE_TOKEN: SecretStr | None = None
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    # Jina API, not a locally-loaded model — keeps BGE-M3's ~2.2GB and the
+    # reranker's ~2GB off a machine that is already short of RAM.
+    JINA_API_KEY: SecretStr | None = None
+    # Azure AI Translator, not a locally-loaded IndicTrans2 model — keeps
+    # another ~2GB and CPU-bound beam search off a machine that is already
+    # short of RAM. Region is required unless the Translator resource is
+    # specifically provisioned as "Global".
+    AZURE_TRANSLATOR_KEY: SecretStr | None = None
+    AZURE_TRANSLATOR_REGION: str | None = None
+    EMBEDDING_MODEL: str = "jina-embeddings-v3"
+    RERANKER_MODEL: str = "jina-reranker-v2-base-multilingual"
     # BGE-M3 dense width. Must equal the Qdrant collection's vector size, or
     # every upsert fails — kept here so both sides read one number.
     EMBEDDING_DIM: int = Field(default=1024, gt=0)
@@ -68,7 +81,7 @@ class Settings(BaseSettings):
     # ---------- Vector store ----------
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: SecretStr | None = None
-    QDRANT_COLLECTION: str = "setu_schemes"
+    QDRANT_COLLECTION: str = "setu-schemes"
 
     # ---------- Retrieval knobs ----------
     # Fetch wide, then let the cross-encoder narrow: recall is cheap at this
@@ -79,9 +92,22 @@ class Settings(BaseSettings):
     # ---------- Observability ----------
     LANGFUSE_PUBLIC_KEY: SecretStr | None = None
     LANGFUSE_SECRET_KEY: SecretStr | None = None
-    LANGFUSE_HOST: str = "http://localhost:3000"
+    # The Langfuse SDK and its own docs name this LANGFUSE_BASE_URL; older setups
+    # and this project's earlier .env used LANGFUSE_HOST. Both are accepted, with
+    # BASE_URL winning, because reading only one of them silently points a
+    # correctly-configured cloud project at localhost and drops every trace.
+    LANGFUSE_HOST: str = Field(
+        default="http://localhost:3000",
+        validation_alias=AliasChoices("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
+    )
 
     # ---------- API security ----------
+    # Origins allowed to call this API cross-origin. The UI is a separate
+    # process/deployment (Chainlit on Render), so the browser enforces CORS
+    # between them. Comma-separated; the default covers local dev only —
+    # production needs the UI's real deployed origin added, e.g.
+    # ALLOWED_ORIGINS=https://setu-ui.onrender.com
+    ALLOWED_ORIGINS: str = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8001,http://127.0.0.1:8001"
     # When set, /query and /query/stream require this key in the X-API-Key
     # header. Left unset for local development; setting it is required before
     # exposing the service, because each request spends metered LLM quota.
@@ -99,7 +125,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "GROQ_API_KEY",
-        "HUGGINGFACE_TOKEN",
+        "JINA_API_KEY",
+        "AZURE_TRANSLATOR_KEY",
         "QDRANT_API_KEY",
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",

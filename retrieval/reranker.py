@@ -1,15 +1,19 @@
-"""Cross-encoder reranking with BAAI/bge-reranker-v2-m3.
+"""Cross-encoder reranking via Jina AI's rerank API.
 
 Retrieval and reranking answer different questions. Bi-encoders embed the query
 and document separately, so they are fast but approximate. A cross-encoder reads
 query and document together and scores the pair directly — far too slow to run
-over a whole corpus, but ideal for reordering the top ~20 candidates.
+over a whole corpus, but ideal for reordering the top ~20 candidates. Jina's
+jina-reranker-v2-base-multilingual runs this as an API call instead of a
+~2GB local model.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any
+
+import httpx
 
 from config.settings import get_settings
 
@@ -21,55 +25,21 @@ Hit = dict[str, Any]
 # both can be inspected when debugging a bad answer.
 RERANK_SCORE_KEY = "rerank_score"
 
+JINA_RERANK_URL = "https://api.jina.ai/v1/rerank"
 
-class BGEReranker:
+
+class JinaReranker:
     """Reorder retrieved hits by cross-encoder relevance to the query."""
 
-    # Shared across instances: the cross-encoder is ~2GB and must not reload
-    # per request.
-    _model_cache: ClassVar[dict[tuple[str, str | None], Any]] = {}
-
-    def __init__(
-        self,
-        model_name: str | None = None,
-        device: str | None = None,
-        batch_size: int = 16,
-        model: Any | None = None,
-    ) -> None:
-        """Configure the reranker without loading the model yet.
+    def __init__(self, model_name: str | None = None) -> None:
+        """Configure the reranker.
 
         Args:
-            model_name: Hugging Face model id. Defaults to settings.RERANKER_MODEL.
-            device: Torch device such as "cpu" or "cuda".
-            batch_size: Query/document pairs scored per forward pass.
-            model: Preloaded cross-encoder, injected by tests to avoid any
-                download or inference.
+            model_name: Jina reranker model id. Defaults to settings.RERANKER_MODEL.
         """
         settings = get_settings()
         self.model_name = model_name or settings.RERANKER_MODEL
-        self.device = device
-        self.batch_size = batch_size
-        self._injected_model = model
-
-    @property
-    def model(self) -> Any:
-        """The underlying CrossEncoder, loaded and cached on first access.
-
-        Returns:
-            A ready CrossEncoder instance.
-        """
-        if self._injected_model is not None:
-            return self._injected_model
-
-        key = (self.model_name, self.device)
-        if key not in self._model_cache:
-            # Lazy import keeps torch off the import path for callers that never
-            # rerank (for example the ingestion script).
-            from sentence_transformers import CrossEncoder
-
-            logger.info("Loading reranker %s (first use may download ~2GB)", self.model_name)
-            self._model_cache[key] = CrossEncoder(self.model_name, device=self.device)
-        return self._model_cache[key]
+        self._api_key = settings.JINA_API_KEY
 
     def rerank(self, query: str, hits: list[Hit], top_k: int = 5) -> list[Hit]:
         """Score every hit against the query and return the best ones.
@@ -81,25 +51,36 @@ class BGEReranker:
 
         Returns:
             A new list of the top_k hits, each with RERANK_SCORE_KEY added,
-            ordered by descending cross-encoder score. Input hits are not
-            mutated.
+            ordered by descending relevance score. Input hits are not mutated.
         """
         if not hits:
             return []
 
-        pairs = [(query, hit.get("text", "")) for hit in hits]
-        scores = self.model.predict(pairs, batch_size=self.batch_size)
+        scores = self._request(query, [hit.get("text", "") for hit in hits])
 
         # Copy rather than mutate, so callers can still inspect the original
         # fusion ordering after reranking.
         scored = [
-            {**hit, RERANK_SCORE_KEY: float(score)}
-            for hit, score in zip(hits, scores, strict=True)
+            {**hit, RERANK_SCORE_KEY: score} for hit, score in zip(hits, scores, strict=True)
         ]
         scored.sort(key=lambda h: h[RERANK_SCORE_KEY], reverse=True)
         return scored[:top_k]
 
-    @classmethod
-    def clear_cache(cls) -> None:
-        """Drop cached models so tests and long-running processes can free memory."""
-        cls._model_cache.clear()
+    def _request(self, query: str, documents: list[str]) -> list[float]:
+        """Call Jina's /v1/rerank and return scores in input order."""
+        response = httpx.post(
+            JINA_RERANK_URL,
+            headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
+            if self._api_key
+            else {},
+            json={
+                "model": self.model_name,
+                "query": query,
+                "documents": documents,
+                "return_documents": False,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        results = response.json()["results"]
+        return [r["relevance_score"] for r in sorted(results, key=lambda r: r["index"])]

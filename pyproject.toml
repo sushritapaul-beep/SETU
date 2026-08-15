@@ -10,9 +10,11 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "deepeval: quality gate requiring a live LLM and a populated Qdrant (excluded by default)",
-    "integration: exercises real models and a real Qdrant; loads ~2GB (excluded by default)",
+    "integration: exercises real Jina/Azure/Qdrant Cloud calls, no mocks (excluded by default)",
 ]
-# Integration tests are opt-in: they load BGE-M3 and would make every run slow.
+# Integration tests are opt-in: they spend real API quota and need network
+# access, so every default `pytest` run would otherwise depend on external
+# services being up and metered calls succeeding.
 addopts = "-m 'not integration'"
 
 [tool.ruff]

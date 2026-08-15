@@ -6,7 +6,8 @@ exercise the seams between components — ingest to index to retrieve — where
 those bugs actually live.
 
 They are marked `integration` and excluded from the default run because they
-load BGE-M3 (~2.2GB). Run them explicitly:
+make real Jina/Qdrant Cloud API calls — real network dependency and metered
+quota, not a local model load. Run them explicitly:
 
     pytest tests/test_integration.py -m integration -v
 """
@@ -59,10 +60,10 @@ air fare are provided to selected candidates.
 
 @pytest.fixture(scope="module")
 def embedder() -> Any:
-    """The real BGE-M3 embedder, loaded once for the module."""
-    from retrieval.embeddings import BGEM3Embedder
+    """The real Jina-backed embedder, constructed once for the module."""
+    from retrieval.embeddings import JinaEmbedder
 
-    return BGEM3Embedder()
+    return JinaEmbedder()
 
 
 def _chunk(doc: str, url: str, name: str) -> list[Any]:
@@ -144,7 +145,7 @@ def test_out_of_corpus_query_scores_far_below_in_corpus(embedder: Any) -> None:
     This gap is what lets the agent decline instead of confabulating, so it is
     worth asserting against real models rather than trusting it by construction.
     """
-    from retrieval.reranker import BGEReranker
+    from retrieval.reranker import JinaReranker
 
     chunks = _chunk(SCHEME_DOC, "https://www.myscheme.gov.in/schemes/mszcs", "ZED")
     store = QdrantStore(
@@ -154,17 +155,7 @@ def test_out_of_corpus_query_scores_far_below_in_corpus(embedder: Any) -> None:
     store.ensure_collection(dim=embedder.dim)
     store.upsert_chunks(chunks, embedder.embed_batch([c.text for c in chunks]))
 
-    try:
-        reranker = BGEReranker()
-        # Force the load here so a failure is attributed to the reranker rather
-        # than surfacing later inside rerank().
-        assert reranker.model is not None
-    except (OSError, MemoryError) as exc:
-        # BGE-M3 is already resident; the cross-encoder needs ~2.2GB more. On a
-        # constrained machine that is an environment limit, not a defect, and a
-        # red test here would misattribute it.
-        pytest.skip(f"reranker could not be loaded in this environment: {exc}")
-
+    reranker = JinaReranker()
     in_corpus = reranker.rerank(
         "What documents are required for ZED certification?",
         store.hybrid_search("ZED certification documents", top_k=5), top_k=1,
@@ -195,7 +186,12 @@ def test_indexed_corpus_matches_disk(tmp_path: Path) -> None:
         pytest.skip("no chunks.jsonl to compare against")
 
     try:
-        client = QdrantClient(url=settings.QDRANT_URL, timeout=10)
+        api_key = settings.QDRANT_API_KEY
+        client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=api_key.get_secret_value() if api_key else None,
+            timeout=10,
+        )
         if not client.collection_exists(settings.QDRANT_COLLECTION):
             pytest.skip(f"collection {settings.QDRANT_COLLECTION} does not exist")
         indexed = client.count(settings.QDRANT_COLLECTION, exact=True).count
@@ -212,7 +208,7 @@ def test_indexed_corpus_matches_disk(tmp_path: Path) -> None:
 
 
 def test_embeddings_are_normalised_and_correctly_shaped(embedder: Any) -> None:
-    """Real BGE-M3 output matches what the Qdrant collection is configured for."""
+    """Real Jina embedding output matches what the Qdrant collection is configured for."""
     vectors = embedder.embed_batch(
         ["Udyam registration is required", "उद्यम पंजीकरण आवश्यक है"]
     )

@@ -80,9 +80,14 @@ HISTORY_DIR = Path(__file__).resolve().parent / "history"
 RUNS_DIR = HISTORY_DIR / "_runs"
 
 # A cheaper judge by default. Scoring 25 answers across 4 metrics is ~100 calls,
-# and llama-3.3-70b exhausts a 100k/day free tier before it finishes. The 8B
-# model is a weaker judge, so record which one produced a score.
+# and the larger answer-generation model exhausts a 100k/day free tier before
+# it finishes. The 8B model is a weaker judge, so record which one produced a
+# score.
 DEFAULT_JUDGE = "llama-3.1-8b-instant"
+
+# answer_relevancy's own similarity scoring needs a real local embedding
+# model — a HuggingFace Hub id, not the runtime pipeline's Jina API model.
+RAGAS_EMBEDDING_MODEL = "BAAI/bge-m3"
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,7 +205,7 @@ def run_agent(graph: Any, row: dict[str, Any]) -> dict[str, Any]:
         return {"answer": "", "contexts": []}
 
     # Scored in English: the gold answers are English, and judging a translation
-    # would measure IndicTrans2 rather than the RAG pipeline.
+    # would measure the translation API rather than the RAG pipeline.
     answer = state.get("answer_en") or state.get("final_answer") or ""
     contexts = [c.get("text", "") for c in (state.get("reranked_chunks") or [])]
     return {"answer": answer, "contexts": contexts}
@@ -232,8 +237,13 @@ def build_judge(model: str) -> tuple[Any, Any]:
         temperature=0.0,
         api_key=settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else None,
     )
-    # answer_relevancy needs embeddings; reuse BGE-M3 so no extra model loads.
-    embeddings = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+    # answer_relevancy needs a real embedding model for its own similarity
+    # scoring. This used to reuse settings.EMBEDDING_MODEL, back when that was
+    # BAAI/bge-m3 (a HuggingFace Hub id HuggingFaceEmbeddings can load). It's
+    # jina-embeddings-v3 now — a Jina API model id, not loadable here — so
+    # RAGAS's own embedding choice is deliberately decoupled from the
+    # pipeline's and hardcoded to a real local model instead.
+    embeddings = HuggingFaceEmbeddings(model_name=RAGAS_EMBEDDING_MODEL)
     return LangchainLLMWrapper(judge), LangchainEmbeddingsWrapper(embeddings)
 
 

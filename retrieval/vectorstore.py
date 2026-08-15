@@ -50,7 +50,7 @@ class QdrantStore:
                 When None, one is built from settings.
             collection: Collection name. Defaults to settings.QDRANT_COLLECTION.
             dim: Dense vector width. Defaults to settings.EMBEDDING_DIM.
-            embedder: Optional BGEM3Embedder used by hybrid_search when the
+            embedder: Optional JinaEmbedder used by hybrid_search when the
                 caller does not supply a precomputed query vector.
         """
         settings = get_settings()
@@ -64,8 +64,9 @@ class QdrantStore:
             api_key = settings.QDRANT_API_KEY
             self.client = QdrantClient(
                 url=settings.QDRANT_URL,
-                # Local docker Qdrant runs without auth, so send no key at all
-                # rather than an empty string, which the server would reject.
+                # QDRANT_API_KEY is optional for a local/dev Qdrant instance
+                # run without auth; send no key at all rather than an empty
+                # string, which the server would reject.
                 api_key=api_key.get_secret_value() if api_key else None,
             )
 

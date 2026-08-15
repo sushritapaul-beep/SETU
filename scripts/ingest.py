@@ -1,8 +1,8 @@
 """One-shot ingestion: scrape, parse, chunk, embed and index scheme documents.
 
 Runs the full pipeline end to end: pages and PDFs become chunks in
-data/processed/chunks.jsonl, which are then embedded with BGE-M3 and upserted
-into Qdrant.
+data/processed/chunks.jsonl, which are then embedded via Jina's API and
+upserted into Qdrant Cloud.
 
 Usage:
     python scripts/ingest.py                      # the five starter URLs
@@ -181,7 +181,7 @@ def load_chunks(path: Path) -> list[Chunk]:
 
 
 def index_chunks(chunks: list[Chunk]) -> int:
-    """Embed chunks with BGE-M3 and upsert them into Qdrant.
+    """Embed chunks via Jina's API and upsert them into Qdrant Cloud.
 
     Args:
         chunks: Chunks to index.
@@ -189,16 +189,16 @@ def index_chunks(chunks: list[Chunk]) -> int:
     Returns:
         Number of points written, or 0 if indexing could not run.
     """
-    # Imported here so that --no-index runs never pay for torch or a Qdrant
-    # connection at all.
-    from retrieval.embeddings import BGEM3Embedder
+    # Imported here so that --no-index runs never open a Qdrant connection
+    # or need JINA_API_KEY set at all.
+    from retrieval.embeddings import JinaEmbedder
     from retrieval.vectorstore import QdrantStore
 
     if not chunks:
         logger.warning("No chunks to index")
         return 0
 
-    embedder = BGEM3Embedder()
+    embedder = JinaEmbedder()
     store = QdrantStore(dim=embedder.dim)
 
     try:
@@ -206,7 +206,7 @@ def index_chunks(chunks: list[Chunk]) -> int:
     except Exception as exc:  # noqa: BLE001 - a down Qdrant must not lose the chunks
         logger.error(
             "Could not reach Qdrant at %s (%s). chunks.jsonl is still written; "
-            "start Qdrant with `docker compose up -d` and re-run with --index-only.",
+            "check QDRANT_URL/QDRANT_API_KEY in .env and re-run with --index-only.",
             get_settings().QDRANT_URL,
             exc,
         )
@@ -256,7 +256,7 @@ async def main() -> int:
         return 1
 
     # No embeddings passed: child chunks are split by character here, so this
-    # stage stays model-free. The retrieval phase supplies BGE-M3.
+    # stage stays model-free. index_chunks() below is what calls Jina.
     chunker = SemanticParentChildChunker()
     all_chunks: list[Chunk] = []
     for text, source_url, scheme_name in documents:

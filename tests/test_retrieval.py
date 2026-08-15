@@ -7,68 +7,48 @@ fusion exactly as the real server does.
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pytest
 from qdrant_client import QdrantClient
 
 from ingestion.chunker import Chunk, ChunkMetadata
-from retrieval.embeddings import BGEM3Embedder
-from retrieval.reranker import RERANK_SCORE_KEY, BGEReranker
+from retrieval.embeddings import JinaEmbedder
+from retrieval.reranker import RERANK_SCORE_KEY, JinaReranker
 from retrieval.vectorstore import DENSE_VECTOR, SPARSE_VECTOR, QdrantStore
 
 DIM = 8
 
 
 # --------------------------------------------------------------------------
-# Stubs
+# Stubs — both APIs are stubbed at the private _request boundary, so tests
+# never make a network call.
 # --------------------------------------------------------------------------
 
-class _FakeSentenceTransformer:
-    """Deterministic stand-in for SentenceTransformer."""
-
-    def __init__(self, dim: int = DIM) -> None:
-        self.dim = dim
-        self.calls: list[list[str]] = []
-
-    def encode(self, texts: list[str], **kwargs: Any) -> np.ndarray:
-        self.calls.append(list(texts))
+def _fake_embed_request(self: JinaEmbedder, texts: list[str], task: str) -> list[list[float]]:
+    """Deterministic stand-in for Jina's /v1/embeddings."""
+    rows = []
+    for text in texts:
         # Seeded by text hash so the same string always yields the same vector.
-        rows = []
-        for text in texts:
-            rng = np.random.default_rng(abs(hash(text)) % (2**32))
-            vec = rng.random(self.dim, dtype=np.float32)
-            if kwargs.get("normalize_embeddings"):
-                vec = vec / np.linalg.norm(vec)
-            rows.append(vec)
-        return np.vstack(rows)
-
-    def get_sentence_embedding_dimension(self) -> int:
-        return self.dim
+        rng = np.random.default_rng(abs(hash(text)) % (2**32))
+        vec = rng.random(DIM, dtype=np.float32)
+        if self.normalize:
+            vec = vec / np.linalg.norm(vec)
+        rows.append(vec.tolist())
+    return rows
 
 
-class _FakeCrossEncoder:
-    """Cross-encoder stub that scores by keyword overlap instead of inference."""
-
-    def predict(self, pairs: list[tuple[str, str]], **kwargs: Any) -> list[float]:
-        scores = []
-        for query, doc in pairs:
-            query_terms = set(query.lower().split())
-            doc_terms = set(doc.lower().split())
-            overlap = len(query_terms & doc_terms)
-            scores.append(float(overlap))
-        return scores
+def _fake_rerank_request(self: JinaReranker, query: str, documents: list[str]) -> list[float]:
+    """Rerank stub that scores by keyword overlap instead of an API call."""
+    query_terms = set(query.lower().split())
+    return [float(len(query_terms & set(doc.lower().split()))) for doc in documents]
 
 
 @pytest.fixture
-def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> BGEM3Embedder:
-    """An embedder whose model property returns the deterministic stub."""
-    BGEM3Embedder.clear_cache()
-    embedder = BGEM3Embedder(model_name="stub-model")
-    monkeypatch.setattr(
-        BGEM3Embedder, "model", property(lambda self: _FakeSentenceTransformer(DIM))
-    )
+def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> JinaEmbedder:
+    """An embedder whose network call is replaced by the deterministic stub."""
+    embedder = JinaEmbedder(model_name="stub-model")
+    embedder._dim = DIM
+    monkeypatch.setattr(JinaEmbedder, "_request", _fake_embed_request)
     return embedder
 
 
@@ -96,7 +76,7 @@ CORPUS = [
 
 
 @pytest.fixture
-def populated_store(fake_embedder: BGEM3Embedder) -> QdrantStore:
+def populated_store(fake_embedder: JinaEmbedder) -> QdrantStore:
     """An in-memory Qdrant store preloaded with the small corpus."""
     store = QdrantStore(
         client=QdrantClient(":memory:"),
@@ -114,7 +94,7 @@ def populated_store(fake_embedder: BGEM3Embedder) -> QdrantStore:
 # 1. Embedder
 # --------------------------------------------------------------------------
 
-def test_embedder_returns_correct_shape_for_two_strings(fake_embedder: BGEM3Embedder) -> None:
+def test_embedder_returns_correct_shape_for_two_strings(fake_embedder: JinaEmbedder) -> None:
     """Two sample strings produce a (2, dim) float32 matrix."""
     vectors = fake_embedder.embed_batch(
         ["Who is eligible for the ZED certification scheme?", "उद्यम पंजीकरण क्या है?"]
@@ -128,34 +108,49 @@ def test_embedder_returns_correct_shape_for_two_strings(fake_embedder: BGEM3Embe
     assert np.allclose(norms, 1.0, atol=1e-5)
 
 
-def test_embed_query_returns_one_dimensional_vector(fake_embedder: BGEM3Embedder) -> None:
+def test_embed_query_returns_one_dimensional_vector(fake_embedder: JinaEmbedder) -> None:
     """A single query embeds to shape (dim,), not (1, dim)."""
     assert fake_embedder.embed_query("eligibility criteria").shape == (DIM,)
 
 
-def test_embed_batch_handles_empty_input(fake_embedder: BGEM3Embedder) -> None:
+def test_embed_batch_handles_empty_input(fake_embedder: JinaEmbedder) -> None:
     """Empty input yields an empty but correctly shaped array, not an error."""
     vectors = fake_embedder.embed_batch([])
     assert vectors.shape[0] == 0
     assert vectors.ndim == 2
 
 
-def test_embedder_does_not_load_model_on_construction(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Constructing an embedder must not trigger a multi-GB download."""
-    BGEM3Embedder.clear_cache()
-    embedder = BGEM3Embedder(model_name="definitely-not-a-real-model")
-    # Nothing cached yet means nothing was loaded.
-    assert not BGEM3Embedder._model_cache
-    assert embedder.dim == 1024  # falls back to the configured dimension
+def test_embedder_defaults_to_configured_dimension() -> None:
+    """A fresh embedder reports the configured dim without any network call."""
+    embedder = JinaEmbedder(model_name="definitely-not-a-real-model")
+    assert embedder.dim == 1024
+
+
+def test_embed_batch_splits_into_batch_size_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """More texts than batch_size means more than one request, not one giant one."""
+    calls: list[list[str]] = []
+
+    def recording_request(self: JinaEmbedder, texts: list[str], task: str) -> list[list[float]]:
+        calls.append(list(texts))
+        return [[0.0] * DIM for _ in texts]
+
+    monkeypatch.setattr(JinaEmbedder, "_request", recording_request)
+    embedder = JinaEmbedder(model_name="stub-model", batch_size=2)
+    embedder._dim = DIM
+
+    embedder.embed_batch(["a", "b", "c", "d", "e"])
+
+    assert [len(c) for c in calls] == [2, 2, 1]
 
 
 # --------------------------------------------------------------------------
 # 2. Reranker
 # --------------------------------------------------------------------------
 
-def test_reranker_reorders_hits_by_relevance() -> None:
-    """The cross-encoder promotes the most relevant hit regardless of input order."""
-    reranker = BGEReranker(model=_FakeCrossEncoder())
+def test_reranker_reorders_hits_by_relevance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reranker promotes the most relevant hit regardless of input order."""
+    monkeypatch.setattr(JinaReranker, "_request", _fake_rerank_request)
+    reranker = JinaReranker()
     hits = [
         {"chunk_id": "a", "text": "tamil nadu handloom weaver subsidy", "score": 0.9},
         {"chunk_id": "b", "text": "udyam portal registration is required", "score": 0.8},
@@ -172,9 +167,10 @@ def test_reranker_reorders_hits_by_relevance() -> None:
     assert result[0]["score"] == 0.8
 
 
-def test_reranker_does_not_mutate_input_hits() -> None:
+def test_reranker_does_not_mutate_input_hits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reranking returns new dicts so the pre-rerank ordering stays inspectable."""
-    reranker = BGEReranker(model=_FakeCrossEncoder())
+    monkeypatch.setattr(JinaReranker, "_request", _fake_rerank_request)
+    reranker = JinaReranker()
     hits = [{"chunk_id": "a", "text": "udyam registration", "score": 0.5}]
 
     reranker.rerank("udyam", hits, top_k=1)
@@ -183,15 +179,15 @@ def test_reranker_does_not_mutate_input_hits() -> None:
 
 
 def test_reranker_handles_empty_hits() -> None:
-    """An empty candidate list short-circuits without loading a model."""
-    assert BGEReranker(model=_FakeCrossEncoder()).rerank("anything", [], top_k=5) == []
+    """An empty candidate list short-circuits without an API call."""
+    assert JinaReranker().rerank("anything", [], top_k=5) == []
 
 
 # --------------------------------------------------------------------------
 # 3. QdrantStore against in-memory Qdrant
 # --------------------------------------------------------------------------
 
-def test_ensure_collection_is_idempotent(fake_embedder: BGEM3Embedder) -> None:
+def test_ensure_collection_is_idempotent(fake_embedder: JinaEmbedder) -> None:
     """Calling ensure_collection twice is safe, so ingest can always call it."""
     store = QdrantStore(client=QdrantClient(":memory:"), collection="c", dim=DIM)
     store.ensure_collection(dim=DIM)
@@ -211,7 +207,7 @@ def test_upsert_chunks_writes_all_points(populated_store: QdrantStore) -> None:
     assert all(len(h["chunk_id"]) == 32 for h in hits)
 
 
-def test_provenance_survives_indexing_and_retrieval(fake_embedder: BGEM3Embedder) -> None:
+def test_provenance_survives_indexing_and_retrieval(fake_embedder: JinaEmbedder) -> None:
     """Every ChunkMetadata field reaches the Qdrant payload and comes back.
 
     Provenance has now been dropped twice by code that listed payload fields by
@@ -266,7 +262,7 @@ def test_upsert_rejects_length_mismatch(populated_store: QdrantStore) -> None:
 
 
 def test_dense_search_returns_hits(
-    populated_store: QdrantStore, fake_embedder: BGEM3Embedder
+    populated_store: QdrantStore, fake_embedder: JinaEmbedder
 ) -> None:
     """Dense search returns scored hits with payload fields promoted."""
     query_vec = fake_embedder.embed_query("Udyam portal registration")

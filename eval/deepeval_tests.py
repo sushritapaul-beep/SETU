@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.graph import build_graph, initial_state  # noqa: E402
 from config.settings import get_settings  # noqa: E402
-from observability.langfuse_setup import build_config  # noqa: E402
+from observability.langfuse_setup import build_config, flush  # noqa: E402
 
 GOLD_SET = Path(__file__).resolve().parent / "gold_set.jsonl"
 
@@ -86,6 +86,18 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _flush_traces() -> Any:
+    """Send buffered spans before the module's process exits.
+
+    Langfuse batches in a background thread, so without this the traces for a
+    whole eval run are discarded at exit — the run that most needs a trace is
+    the one that produced no trace at all.
+    """
+    yield
+    flush()
+
+
 @pytest.fixture(scope="module")
 def graph() -> Any:
     """Compile the agent once for the whole module."""
@@ -134,7 +146,7 @@ def test_answer_is_faithful_and_relevant(
     state = graph.invoke(initial_state(row["query"]), config=config)
 
     # Judged in English: the gold answers are English, so scoring the translated
-    # output would measure IndicTrans2 rather than the RAG pipeline.
+    # output would measure the translation API rather than the RAG pipeline.
     answer = state.get("answer_en") or state.get("final_answer") or ""
     contexts = [c.get("text", "") for c in (state.get("reranked_chunks") or [])]
 

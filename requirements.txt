@@ -7,22 +7,19 @@
 # ---------- Agent framework ----------
 langgraph==1.2.9                  # PINNED
 langchain==1.3.11                 # PINNED
-langchain-community
-langchain-text-splitters          # RecursiveCharacterTextSplitter (parent chunks)
-langchain-experimental            # SemanticChunker — ADDED IN PHASE 2, see note below
+langchain-community                # RAGAS eval shim (eval/ only, see ragas_eval.py)
+langchain-text-splitters          # RecursiveCharacterTextSplitter (parent chunks, ingestion/)
 langchain-groq                    # primary LLM provider
 langchain-ollama                  # local fallback provider
-langchain-huggingface             # BGE-M3 embeddings via sentence-transformers
-
-# NOTE (Phase 2): langchain-experimental was not in the original stack, but
-# SemanticChunker ships only there — there is no stable-package equivalent.
+langchain-huggingface             # RAGAS's own context-similarity embeddings (eval/ only —
+                                  # the runtime pipeline's embeddings are a Jina API call)
 
 # ---------- Vector store & retrieval ----------
 qdrant-client>=1.9,<2             # 1.x line; hybrid/native fusion API
-fastembed                         # ADDED IN PHASE 3: supplies the Qdrant/bm25
-                                  # sparse model. Without it, models.Document
-                                  # BM25 inference raises at query time.
-sentence-transformers             # BAAI/bge-m3 + bge-reranker-v2-m3
+fastembed                         # supplies the Qdrant/bm25 sparse model. Without it,
+                                  # models.Document BM25 inference raises at query time.
+sentence-transformers             # transitive need of langchain-huggingface (eval/ only —
+                                  # BGE-M3 and the reranker themselves are Jina API calls)
 
 # ---------- Ingestion ----------
 docling                           # PDF -> structured markdown (primary)
@@ -30,35 +27,26 @@ crawl4ai                          # gov portal crawling; needs a one-time
                                   # `python -m playwright install chromium`
 pymupdf4llm                       # lightweight PDF fallback when Docling is overkill
 
-# ---------- Indic language layer (Phase 5) ----------
+# ---------- Indic language layer ----------
 # fasttext-wheel, not fasttext: it ships prebuilt Windows wheels, so no C++
-# compiler is required. IndicLID's two classifiers are plain fastText models.
+# compiler is required. IndicLID's two classifiers are plain fastText models,
+# kept local because they're tiny — translation itself is an Azure API call.
 fasttext-wheel
-IndicTransToolkit                 # preprocessing for IndicTrans2
-sentencepiece                     # IndicTrans2's tokenizer; without it the
-                                  # tokenizer fails to load and translation
-                                  # silently falls back to untranslated text
-# PINNED to 4.x: IndicTransToolkit 1.1.1 imports PreTrainedTokenizerBase from a
-# location that moved in transformers 5. sentence-transformers 5.6.1 declares
-# transformers<6.0.0,>=4.41.0, so BGE-M3 and the reranker are unaffected.
-transformers>=4.41,<5
 
 # ---------- Serving ----------
 fastapi
 uvicorn[standard]
 pydantic-settings                 # type-safe config from .env
-# PINNED to 5.x: gradio 6 requires huggingface-hub>=1.16, which conflicts with
-# the transformers<5 pin from Phase 5. Gradio 5 works with hub 0.36.x, so this
-# resolves that conflict; `pip check` is clean.
-gradio>=5,<6
+httpx                             # Jina, Azure Translator, and Groq calls
+chainlit>=2.11,<3                 # production UI; ui/requirements.txt has the
+                                  # lean version actually shipped in its Docker image
 
 # ---------- Evaluation ----------
 ragas
 deepeval
 
 # ---------- Observability ----------
-langfuse>=4,<5                    # v4 SDK; pairs with the v4 server in docker-compose
-litellm
+langfuse>=4,<5                    # v4 SDK; Langfuse Cloud or self-hosted, either works
 
 # ---------- Dev / test ----------
 pytest

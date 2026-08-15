@@ -19,8 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import get_settings  # noqa: E402
-from retrieval.embeddings import BGEM3Embedder  # noqa: E402
-from retrieval.reranker import RERANK_SCORE_KEY, BGEReranker  # noqa: E402
+from retrieval.embeddings import JinaEmbedder  # noqa: E402
+from retrieval.reranker import RERANK_SCORE_KEY, JinaReranker  # noqa: E402
 from retrieval.vectorstore import QdrantStore  # noqa: E402
 
 logger = logging.getLogger("setu.smoke")
@@ -51,7 +51,7 @@ def main() -> int:
     logging.basicConfig(level="INFO", format="%(levelname)-7s | %(name)s | %(message)s")
     settings = get_settings()
 
-    embedder = BGEM3Embedder()
+    embedder = JinaEmbedder()
     store = QdrantStore(embedder=embedder)
 
     if not store.client.collection_exists(store.collection):
@@ -82,7 +82,7 @@ def main() -> int:
         logger.error("No candidates returned; is the collection populated with child chunks?")
         return 1
 
-    reranked = BGEReranker().rerank(args.query, hits, top_k=args.top_k)
+    reranked = JinaReranker().rerank(args.query, hits, top_k=args.top_k)
 
     # Fusion rank before reranking, so the reordering is visible.
     fusion_rank = {hit["chunk_id"]: i + 1 for i, hit in enumerate(hits)}

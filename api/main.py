@@ -80,12 +80,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    # The Gradio UI runs on 7860; both hostnames are listed because browsers
-    # treat them as distinct origins.
-    allow_origins=[
-        "http://localhost:7860",
-        "http://127.0.0.1:7860",
-    ],
+    allow_origins=[origin.strip() for origin in get_settings().ALLOWED_ORIGINS.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

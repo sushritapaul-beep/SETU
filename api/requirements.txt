@@ -1,0 +1,37 @@
+# Dependencies for the deployed API container only.
+#
+# Same reasoning as ui/requirements.txt: agents/, retrieval/, and indic/ are
+# all API-calling clients now (Jina, Azure Translator, Groq) since Phases 3-4
+# moved every locally-loaded model out — this image never imports torch,
+# transformers, sentence-transformers, IndicTransToolkit, or sentencepiece,
+# so it doesn't install them. Those stay in the root requirements.txt because
+# eval/ (never shipped in this image) still uses langchain-huggingface for
+# RAGAS's own context-similarity scoring.
+
+# ---------- Agent framework ----------
+langgraph==1.2.9                  # PINNED
+langchain==1.3.11                 # PINNED
+langchain-groq                    # primary LLM provider
+langchain-ollama                  # local fallback provider
+
+# ---------- Vector store & retrieval ----------
+qdrant-client>=1.9,<2
+fastembed                         # supplies the Qdrant BM25 sparse model
+
+# ---------- Indic language layer ----------
+# fasttext-wheel, not fasttext: prebuilt Windows wheels, no C++ compiler
+# needed. IndicLID's two classifiers are plain fastText models, kept local
+# because the model itself is tiny — everything else (embeddings, reranking,
+# translation) is an API call.
+fasttext-wheel
+
+# ---------- HTTP client ----------
+httpx                              # Jina, Azure Translator, and Groq calls
+
+# ---------- Serving ----------
+fastapi
+uvicorn[standard]
+pydantic-settings
+
+# ---------- Observability ----------
+langfuse>=4,<5
