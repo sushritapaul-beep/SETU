@@ -1,0 +1,36 @@
+/* SETU — typography refinements layered on top of theme.json's tokens.
+   Kept to page-level rules rather than guessing at Chainlit's internal
+   component class names, which aren't part of its public API and can change
+   between releases without notice. */
+
+html,
+body {
+  /* Devanagari and Tamil need more vertical room than Latin at the same
+     font-size, or matras/diacritics visually collide with the line above. */
+  line-height: 1.65;
+}
+
+/* Citation markers like [39f4b029] read as data, not prose. */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* <details> panels (eligibility verdict, sources) get a defined edge instead
+   of floating in the message bubble with no boundary. */
+details {
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.65rem 0.9rem;
+  margin: 0.6rem 0;
+  background: hsl(var(--card));
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+details[open] summary {
+  margin-bottom: 0.5rem;
+}

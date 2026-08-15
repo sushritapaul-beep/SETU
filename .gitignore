@@ -34,6 +34,7 @@ htmlcov/
 data/raw/*.pdf
 data/raw/*.html
 data/processed/*
+data/feedback.sqlite3
 !data/**/.gitkeep
 
 # Hand-authored rules and the eval gold set ARE tracked — they are source of truth.

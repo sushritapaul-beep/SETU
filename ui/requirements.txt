@@ -1,0 +1,10 @@
+# Dependencies for the deployed Chainlit UI container only.
+#
+# Deliberately NOT the root requirements.txt: this UI is a thin HTTP client to
+# the SETU API (same split ui/app.py already uses) and never imports agents/,
+# retrieval/, or indic/ — so it needs none of their dependencies, including
+# the heavy ones (torch, transformers, sentence-transformers) that eval/ still
+# pulls in. Installing the full tree here would bloat the Render image for
+# nothing this service ever runs.
+chainlit>=2.11,<3
+httpx
