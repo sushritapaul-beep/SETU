@@ -3,8 +3,8 @@
 Shows the full multilingual path — detected language, English translation,
 retrieved chunks, English answer, and the answer translated back.
 
-Requires: a populated Qdrant collection, a working LLM, and access to the GATED
-IndicTrans2 repos (accept the terms on HuggingFace, then set HUGGINGFACE_TOKEN).
+Requires: a populated Qdrant collection, a working LLM, and AZURE_TRANSLATOR_KEY
+(plus AZURE_TRANSLATOR_REGION, unless the resource is Global) in .env.
 
 Usage:
     python scripts/smoke_indic.py
@@ -51,11 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--only",
         choices=[label.lower() for label, _ in QUERIES],
-        help=(
-            "Run a single query. The full pipeline holds ~6GB of models "
-            "(BGE-M3 + reranker + two IndicTrans2 models); on a 16GB machine, "
-            "running all three back to back can exhaust RAM."
-        ),
+        help="Run a single query instead of all three.",
     )
     return parser.parse_args()
 
@@ -121,11 +117,9 @@ def main() -> int:
     if problems:
         logger.error("LLM not configured: %s", "; ".join(problems))
         return 1
-    if settings.HUGGINGFACE_TOKEN is None:
-        print("\nHUGGINGFACE_TOKEN is not set. The IndicTrans2 repos are gated:")
-        print("  1. Accept terms at https://huggingface.co/ai4bharat/indictrans2-indic-en-dist-200M")
-        print("  2. Accept terms at https://huggingface.co/ai4bharat/indictrans2-en-indic-dist-200M")
-        print("  3. Put a read token in HUGGINGFACE_TOKEN in .env")
+    if settings.AZURE_TRANSLATOR_KEY is None:
+        print("\nAZURE_TRANSLATOR_KEY is not set. Create a Translator resource in the")
+        print("Azure portal and add the key (and region, unless Global) to .env.")
         print("\nRe-run with --detect-only to exercise language detection alone.")
         return 1
 

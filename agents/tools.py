@@ -167,37 +167,6 @@ class EligibilityChecker:
         """
         return scheme_id in self.schemes
 
-    def check_all(self, user_profile: dict[str, Any]) -> list[dict[str, Any]]:
-        """Evaluate a profile against every known scheme.
-
-        Args:
-            user_profile: Field/value pairs describing the applicant.
-
-        Returns:
-            One result dict per scheme, eligible ones first.
-        """
-        results = [self.check(sid, user_profile) for sid in self.schemes]
-        results.sort(key=lambda r: (not r["eligible"], len(r["failed_rules"])))
-        return results
-
-    def required_fields(self, scheme_id: str) -> list[str]:
-        """List the profile fields a scheme's rules refer to.
-
-        Args:
-            scheme_id: Scheme to inspect.
-
-        Returns:
-            Deduplicated field names, in rule order.
-        """
-        scheme = self.schemes.get(scheme_id)
-        if scheme is None:
-            return []
-        seen: list[str] = []
-        for rule in scheme.rules:
-            if rule.field not in seen:
-                seen.append(rule.field)
-        return seen
-
     @staticmethod
     def _as_dict(rule: Rule) -> dict[str, Any]:
         """Render a rule as a plain dict for the result payload.

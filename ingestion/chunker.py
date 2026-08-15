@@ -159,20 +159,13 @@ class Chunk:
 class SemanticParentChildChunker:
     """Produce large parent chunks and the smaller child chunks nested inside them.
 
-    Child splitting uses LangChain's SemanticChunker when an embeddings model is
-    supplied, which places boundaries where meaning shifts rather than at a fixed
-    character count. When no embeddings model is given it falls back to recursive
-    character splitting, which keeps this stage runnable with no model downloads.
+    Children are split by recursive character splitting, which keeps this stage
+    runnable with no model downloads.
     """
 
-    embeddings: Any | None = None
     parent_tokens: int = 2048
     child_tokens: int = 512
     child_overlap_tokens: int = 64
-    # "percentile" with a high amount splits only at the largest meaning shifts,
-    # which keeps children coherent instead of fragmenting every sentence.
-    breakpoint_threshold_type: str = "percentile"
-    breakpoint_threshold_amount: float = 95.0
     _parent_splitter: RecursiveCharacterTextSplitter = field(init=False, repr=False)
     _child_splitter: RecursiveCharacterTextSplitter = field(init=False, repr=False)
 
@@ -292,39 +285,7 @@ class SemanticParentChildChunker:
         Returns:
             Child chunk texts, each within the configured token budget.
         """
-        if self.embeddings is None:
-            return self._child_splitter.split_text(parent_text)
-
-        try:
-            # Imported lazily so the package is only required when semantic
-            # splitting is actually requested.
-            from langchain_experimental.text_splitter import SemanticChunker
-
-            semantic = SemanticChunker(
-                embeddings=self.embeddings,
-                breakpoint_threshold_type=self.breakpoint_threshold_type,
-                breakpoint_threshold_amount=self.breakpoint_threshold_amount,
-            )
-            candidates = semantic.split_text(parent_text)
-        except Exception as exc:  # noqa: BLE001 - degrade to character splitting
-            logger.warning(
-                "Semantic chunking failed (%s: %s); using character splitting",
-                type(exc).__name__,
-                exc,
-            )
-            return self._child_splitter.split_text(parent_text)
-
-        # SemanticChunker has no size ceiling — a long uniform passage can come
-        # back as one huge chunk that would blow the embedding window. Re-split
-        # anything over budget.
-        max_chars = self.child_tokens * CHARS_PER_TOKEN
-        children: list[str] = []
-        for candidate in candidates:
-            if len(candidate) <= max_chars:
-                children.append(candidate)
-            else:
-                children.extend(self._child_splitter.split_text(candidate))
-        return children
+        return self._child_splitter.split_text(parent_text)
 
     @classmethod
     def strip_boilerplate(cls, text: str) -> str:

@@ -34,8 +34,9 @@ INDIC_RANGES = (
     (0x1C50, 0x1C7F),  # Ol Chiki (Santali)
 )
 
-# IndicLID spells some scripts differently from the FLORES-200 tags IndicTrans2
-# expects, so labels are normalised here rather than at every call site.
+# IndicLID spells some scripts differently from the standard ISO 15924 /
+# FLORES-200 codes the rest of the pipeline uses, so labels are normalised
+# here rather than at every call site.
 SCRIPT_ALIASES = {
     "Tamil": "Taml",
     "Telugu": "Telu",

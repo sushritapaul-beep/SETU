@@ -87,9 +87,13 @@ class _FakeLLM:
     def __init__(self, responses: list[str]) -> None:
         self.responses = list(responses)
         self.prompts: list[str] = []
+        self.configs: list[dict[str, Any] | None] = []
 
-    def invoke(self, prompt: str) -> Any:
+    def invoke(self, prompt: str, config: dict[str, Any] | None = None) -> Any:
+        # Mirrors BaseChatModel.invoke, which takes a config; the nodes pass one
+        # to name each call in traces.
         self.prompts.append(prompt)
+        self.configs.append(config)
         text = self.responses.pop(0) if self.responses else ""
 
         class _Response:
@@ -157,13 +161,6 @@ def test_graph_compiles_without_error() -> None:
         "self_critique",
     ):
         assert expected in node_names
-
-
-def test_module_level_graph_is_importable() -> None:
-    """The exported graph object exists, so API and UI layers can import it."""
-    from agents.graph import graph
-
-    assert graph is not None
 
 
 def test_prompts_are_versioned() -> None:
@@ -490,6 +487,7 @@ class _FakeTranslator:
     def __init__(self) -> None:
         self.to_en_calls: list[tuple[str, str]] = []
         self.from_en_calls: list[tuple[str, str]] = []
+        self.romanize_calls: list[tuple[str, str]] = []
 
     def to_english(self, text: str, src_lang: str) -> str:
         self.to_en_calls.append((text, src_lang))
@@ -498,6 +496,10 @@ class _FakeTranslator:
     def from_english(self, text: str, tgt_lang: str) -> str:
         self.from_en_calls.append((text, tgt_lang))
         return f"[{tgt_lang}] {text}"
+
+    def to_romanized(self, text: str, lang: str) -> str:
+        self.romanize_calls.append((text, lang))
+        return f"ROMAN: {text}"
 
 
 def _wire_indic(
@@ -609,6 +611,10 @@ def test_code_mixed_input_picks_the_non_english_language(
     assert result["lang"] == "code_mixed"
     # eng_Latn is skipped in favour of the Indic code.
     assert translator.to_en_calls[0][1] == "hin_Latn"
+    # The user wrote in Latin script, so the answer is romanised rather than
+    # left in Devanagari.
+    assert translator.romanize_calls == [("[hin_Latn] Answer [aaaaaaaa].", "hin_Latn")]
+    assert result["final_answer"] == "ROMAN: [hin_Latn] Answer [aaaaaaaa]."
 
 
 def test_translation_failure_falls_back_to_original_text(

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from agents.prompts import GROUNDED_ANSWERER, PROFILE_EXTRACTOR, QUERY_CLASSIFIER, SELF_CRITIC
 from agents.tools import EligibilityChecker
 from config.settings import get_settings
+from observability.langfuse_setup import observation, score_trace, set_trace_io
 
 if TYPE_CHECKING:  # avoids a circular import: graph.py imports this module
     from agents.graph import SetuState
@@ -73,6 +74,10 @@ def get_llm() -> Any:
             max_retries=settings.LLM_MAX_RETRIES,
             timeout=settings.LLM_TIMEOUT_SECONDS,
             api_key=settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else None,
+            # qwen3.6-27b is a reasoning model; SETU parses JSON straight out of
+            # the response, so thinking output must not leak into it. Ignored
+            # by non-reasoning models if GROQ_MODEL is overridden.
+            reasoning_effort="none",
         )
 
     from langchain_ollama import ChatOllama
@@ -91,10 +96,10 @@ def get_store() -> Any:
     Returns:
         A QdrantStore ready for hybrid search.
     """
-    from retrieval.embeddings import BGEM3Embedder
+    from retrieval.embeddings import JinaEmbedder
     from retrieval.vectorstore import QdrantStore
 
-    embedder = BGEM3Embedder()
+    embedder = JinaEmbedder()
     return QdrantStore(embedder=embedder)
 
 
@@ -103,11 +108,11 @@ def get_reranker() -> Any:
     """Build the cross-encoder reranker.
 
     Returns:
-        A BGEReranker instance.
+        A JinaReranker instance.
     """
-    from retrieval.reranker import BGEReranker
+    from retrieval.reranker import JinaReranker
 
-    return BGEReranker()
+    return JinaReranker()
 
 
 @lru_cache(maxsize=1)
@@ -134,7 +139,7 @@ def get_detector() -> Any:
 
 @lru_cache(maxsize=1)
 def get_translator() -> Any:
-    """Build the IndicTrans2 translator.
+    """Build the Sarvam-backed translator.
 
     Returns:
         An IndicTranslator instance.
@@ -146,7 +151,7 @@ def get_translator() -> Any:
 
 # ------------------------------------------------------------------ helpers --
 
-def _invoke_llm(prompt: str) -> str:
+def _invoke_llm(prompt: str, run_name: str) -> str:
     """Call the chat model and return its text, or an empty string on failure.
 
     Wrapped so that a rate limit or a dead API degrades the answer instead of
@@ -154,12 +159,17 @@ def _invoke_llm(prompt: str) -> str:
 
     Args:
         prompt: Fully rendered prompt text.
+        run_name: Name for this call in traces. Without it all four LLM calls in
+            a run are recorded as "ChatGroq" and cannot be told apart or
+            compared against each other.
 
     Returns:
         The model's text response, or "" if the call failed.
     """
     try:
-        response = get_llm().invoke(prompt)
+        # Only run_name is passed: LangChain merges this with the ambient config,
+        # so the inherited Langfuse callbacks stay attached.
+        response = get_llm().invoke(prompt, config={"run_name": run_name})
     except Exception as exc:  # noqa: BLE001 - any provider error must degrade
         logger.error("LLM call failed (%s): %s", type(exc).__name__, exc)
         return ""
@@ -211,6 +221,29 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
         text = " ".join(chunk.get("text", "").split())
         lines.append(f"[{label}] ({chunk.get('scheme_name', 'unknown scheme')}) {text}")
     return "\n\n".join(lines)
+
+
+def _chunk_digest(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Summarise chunks for a trace: what was found, without repeating the text.
+
+    The full passage text is already on the enclosing node span, so recording it
+    again on the retrieval observation would double the trace payload for no
+    extra insight. What is needed here is which passages ranked where.
+
+    Args:
+        chunks: Retrieval hits.
+
+    Returns:
+        One compact record per chunk, in rank order.
+    """
+    return [
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "scheme_name": chunk.get("scheme_name"),
+            "score": chunk.get("score") or chunk.get("rerank_score"),
+        }
+        for chunk in chunks
+    ]
 
 
 def _scheme_id_from_url(source_url: str) -> str:
@@ -333,6 +366,14 @@ def translate_answer_from_en(state: SetuState) -> dict[str, Any]:
         logger.error("Answer translation failed (%s): %s", type(exc).__name__, exc)
         return {"answer_en": answer}
 
+    # The query's own script is Latin — either genuinely code-mixed (two
+    # languages clear IndicLID's threshold) or a single language IndicLID is
+    # confident is romanised (e.g. "hin_Latn" alone). Either way the user
+    # typed in Latin script, so the answer should come back in it too, rather
+    # than Devanagari/Tamil they may not read fluently.
+    if state.get("script") == "Latn":
+        localised = get_translator().to_romanized(localised, target)
+
     logger.info("translate_answer_from_en: -> %s", target)
     # The English text is kept so evaluation can score the model's actual output
     # rather than a translation of it.
@@ -370,7 +411,7 @@ def classify_intent(state: SetuState) -> dict[str, Any]:
     Returns:
         State update with "intent".
     """
-    raw = _invoke_llm(QUERY_CLASSIFIER.format(query=state["user_query"]))
+    raw = _invoke_llm(QUERY_CLASSIFIER.format(query=state["user_query"]), "classify-intent")
     parsed = _parse_json(raw)
     intent = parsed.get("intent")
     if intent not in VALID_INTENTS:
@@ -397,7 +438,7 @@ def extract_profile(state: SetuState) -> dict[str, Any]:
         logger.debug("extract_profile: skipped for intent=%s", state.get("intent"))
         return {"profile": {}}
 
-    raw = _invoke_llm(PROFILE_EXTRACTOR.format(query=_effective_query(state)))
+    raw = _invoke_llm(PROFILE_EXTRACTOR.format(query=_effective_query(state)), "extract-profile")
     profile = _parse_json(raw)
     # Drop nulls so the checker reports them as missing rather than comparing
     # against None.
@@ -422,17 +463,29 @@ def retrieve_hybrid(state: SetuState) -> dict[str, Any]:
     settings = get_settings()
     query = _effective_query(state)
 
-    try:
-        hits = get_store().hybrid_search(
-            query_text=query,
-            k_dense=settings.RETRIEVAL_TOP_K,
-            k_sparse=settings.RETRIEVAL_TOP_K,
-            top_k=settings.RETRIEVAL_TOP_K,
-            filters=QdrantStore.child_only_filter(),
-        )
-    except Exception as exc:  # noqa: BLE001 - a down Qdrant degrades to no context
-        logger.error("Retrieval failed (%s): %s", type(exc).__name__, exc)
-        hits = []
+    # Typed as a retriever rather than a plain span: this is the step whose
+    # recall determines whether the answer can be grounded at all, and Langfuse
+    # only breaks retrieval out in its own analytics when it is typed as one.
+    with observation("retrieve-hybrid", as_type="retriever", input=query) as span:
+        try:
+            hits = get_store().hybrid_search(
+                query_text=query,
+                k_dense=settings.RETRIEVAL_TOP_K,
+                k_sparse=settings.RETRIEVAL_TOP_K,
+                top_k=settings.RETRIEVAL_TOP_K,
+                filters=QdrantStore.child_only_filter(),
+            )
+        except Exception as exc:  # noqa: BLE001 - a down Qdrant degrades to no context
+            logger.error("Retrieval failed (%s): %s", type(exc).__name__, exc)
+            hits = []
+
+        if span is not None:
+            span.update(
+                output=_chunk_digest(hits),
+                # Records that the critic rewrote the query, which is otherwise
+                # invisible: a retry looks identical to a first attempt.
+                metadata={"is_retry": bool(state.get("search_query")), "candidates": len(hits)},
+            )
 
     logger.info("retrieve_hybrid: %d candidates for %r", len(hits), query)
     return {"retrieved_chunks": hits}
@@ -452,11 +505,18 @@ def rerank(state: SetuState) -> dict[str, Any]:
         return {"reranked_chunks": []}
 
     query = _effective_query(state)
-    try:
-        top = get_reranker().rerank(query, candidates, top_k=get_settings().RERANK_TOP_N)
-    except Exception as exc:  # noqa: BLE001 - fall back to fusion order
-        logger.error("Rerank failed (%s): %s; using fusion order", type(exc).__name__, exc)
-        top = candidates[: get_settings().RERANK_TOP_N]
+    with observation("rerank-cross-encoder", as_type="retriever", input=query) as span:
+        try:
+            top = get_reranker().rerank(query, candidates, top_k=get_settings().RERANK_TOP_N)
+        except Exception as exc:  # noqa: BLE001 - fall back to fusion order
+            logger.error("Rerank failed (%s): %s; using fusion order", type(exc).__name__, exc)
+            top = candidates[: get_settings().RERANK_TOP_N]
+
+        if span is not None:
+            span.update(
+                output=_chunk_digest(top),
+                metadata={"candidates_in": len(candidates), "kept": len(top)},
+            )
 
     logger.info("rerank: kept %d of %d", len(top), len(candidates))
     return {"reranked_chunks": top}
@@ -546,7 +606,8 @@ def generate_answer(state: SetuState) -> dict[str, Any]:
             # The English form: context passages are English, so mixing scripts
             # in one prompt would only make grounding harder.
             query=_effective_query(state),
-        )
+        ),
+        "generate-answer",
     )
     if not draft:
         draft = "The language model was unavailable, so I cannot answer right now."
@@ -585,7 +646,8 @@ def self_critique(state: SetuState) -> dict[str, Any]:
             context=_format_context(chunks),
             query=_effective_query(state),
             draft_answer=draft,
-        )
+        ),
+        "self-critique",
     )
     parsed = _parse_json(raw)
 
@@ -607,6 +669,16 @@ def self_critique(state: SetuState) -> dict[str, Any]:
         "retry" if will_retry else "finalize",
     )
 
+    # The agent already judges its own output; recording that judgement is what
+    # turns the trace list into something filterable by quality. Sent on every
+    # pass, including retried ones, so a run that had to retry is visible as
+    # such rather than only by its final score.
+    score_trace(
+        "faithfulness",
+        score,
+        comment=f"retry {retries}" if will_retry else f"finalized after {retries} retries",
+    )
+
     if will_retry:
         better = parsed.get("better_query") or state["user_query"]
         return {
@@ -614,5 +686,10 @@ def self_critique(state: SetuState) -> dict[str, Any]:
             "retries": retries + 1,
             "search_query": better,
         }
+
+    # Promote the question and answer to the trace's own input/output. The
+    # LangGraph handler would otherwise show the whole state dict — every
+    # retrieved passage included — where the trace list needs a readable pair.
+    set_trace_io(input=state["user_query"], output=draft)
 
     return {"faithfulness_score": score, "final_answer": draft}

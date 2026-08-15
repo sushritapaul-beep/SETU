@@ -1,4 +1,4 @@
-"""Offline tests for the Indic layer — fastText and IndicTrans2 are mocked."""
+"""Offline tests for the Indic layer — fastText and the Azure Translator API call are mocked."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from indic.lang_detect import IndicLanguageDetector
-from indic.translator import ENGLISH_TAG, IndicTranslator, to_flores
+from indic.translator import ENGLISH_TAG, IndicTranslator, to_azure_lang
 
 # --------------------------------------------------------------------------
 # Language detection
@@ -63,7 +63,7 @@ def test_detects_native_hindi(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_detects_tamil_and_normalises_script_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    """IndicLID's 'Tamil' is normalised to the ISO 15924 code IndicTrans2 wants."""
+    """IndicLID's 'Tamil' is normalised to the ISO 15924 code the pipeline wants."""
     detector = _detector_with(monkeypatch, [(0.99, "__label__tam_Tamil")])
 
     result = detector.detect("இந்த திட்டத்திற்கு என்ன ஆவணங்கள் தேவை?")
@@ -121,31 +121,30 @@ def test_blank_and_failing_input_degrade_to_english(monkeypatch: pytest.MonkeyPa
 # Translation
 # --------------------------------------------------------------------------
 
-def test_to_flores_maps_iso_codes() -> None:
-    """Short and three-letter codes both resolve to FLORES-200 tags."""
-    assert to_flores("hi") == "hin_Deva"
-    assert to_flores("hin") == "hin_Deva"
-    assert to_flores("ta") == "tam_Taml"
-    assert to_flores("en") == ENGLISH_TAG
-    assert to_flores("hin_Deva") == "hin_Deva"
+def test_to_azure_lang_maps_iso_codes() -> None:
+    """Short and three-letter codes both resolve to Azure's language codes."""
+    assert to_azure_lang("hi") == "hi"
+    assert to_azure_lang("hin") == "hi"
+    assert to_azure_lang("ta") == "ta"
+    assert to_azure_lang("en") == ENGLISH_TAG
+    assert to_azure_lang("hin_Deva") == "hi"
 
 
-def test_to_flores_maps_romanised_indic_to_native_script() -> None:
-    """IndicTrans2 has no romanised input mode, so Hinglish maps to Devanagari."""
-    assert to_flores("hin_Latn") == "hin_Deva"
-    assert to_flores("tam_Latn") == "tam_Taml"
-    # English in Latin script is left alone.
-    assert to_flores("eng_Latn") == "eng_Latn"
+def test_to_azure_lang_ignores_script_suffix() -> None:
+    """Azure has one code per language, so a romanised tag maps the same way."""
+    assert to_azure_lang("hin_Latn") == "hi"
+    assert to_azure_lang("tam_Latn") == "ta"
+    assert to_azure_lang("eng_Latn") == ENGLISH_TAG
 
 
-def test_to_flores_falls_back_to_english_for_unknown() -> None:
+def test_to_azure_lang_falls_back_to_english_for_unknown() -> None:
     """An unrecognised code degrades to English rather than raising."""
-    assert to_flores("klingon") == ENGLISH_TAG
+    assert to_azure_lang("klingon") == ENGLISH_TAG
 
 
 def test_translate_is_a_noop_when_languages_match() -> None:
-    """Identical source and target skip the model entirely."""
-    translator = IndicTranslator(device="cpu")
+    """Identical source and target skip the API call entirely."""
+    translator = IndicTranslator()
 
     assert translator.from_english("already english", "en") == "already english"
     assert translator.to_english("", "hi") == ""
@@ -166,13 +165,13 @@ def test_segment_isolates_citations_from_prose() -> None:
 
 
 def test_segment_splits_long_prose_into_sentences() -> None:
-    """Long text is split so the generator's length limit cannot truncate it."""
-    long_text = ("This is a sentence about the scheme eligibility criteria. " * 12).strip()
+    """Long text is split so no single segment exceeds the configured ceiling."""
+    long_text = ("This is a sentence about the scheme eligibility criteria. " * 40).strip()
 
     pieces = IndicTranslator._segment(long_text)
 
     assert len(pieces) > 1, "long prose must be broken up"
-    assert all(len(text) <= 400 for _, text in pieces)
+    assert all(len(text) <= 2000 for _, text in pieces)
 
 
 def test_segment_leaves_short_text_alone() -> None:
@@ -181,13 +180,48 @@ def test_segment_leaves_short_text_alone() -> None:
 
 
 def test_translation_failure_returns_input_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A gated or missing model must not lose the user's text."""
-    translator = IndicTranslator(device="cpu")
+    """A failed API call must not lose the user's text."""
+    translator = IndicTranslator()
 
-    def _boom(model_id: str) -> Any:
-        raise RuntimeError("gated repo")
+    def _boom(text: str, src_lang: str, tgt_lang: str) -> Any:
+        raise RuntimeError("Azure Translator unreachable")
 
-    monkeypatch.setattr(translator, "_load", _boom)
+    monkeypatch.setattr(translator, "_request", _boom)
 
     original = "उद्यम पंजीकरण"
     assert translator.to_english(original, "hi") == original
+
+
+def test_to_romanized_converts_native_script_to_latin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hindi Devanagari is romanised via Azure's /transliterate endpoint."""
+    translator = IndicTranslator()
+    calls: list[tuple[str, str, str, str]] = []
+
+    def _fake(text: str, language: str, from_script: str, to_script: str) -> str:
+        calls.append((text, language, from_script, to_script))
+        return "udyam panjikaran"
+
+    monkeypatch.setattr(translator, "_transliterate_request", _fake)
+
+    assert translator.to_romanized("उद्यम पंजीकरण", "hi") == "udyam panjikaran"
+    assert calls == [("उद्यम पंजीकरण", "hi", "Deva", "Latn")]
+
+
+def test_to_romanized_skips_languages_with_no_native_script_mapping() -> None:
+    """A language outside NATIVE_SCRIPT passes through unchanged rather than erroring."""
+    translator = IndicTranslator()
+
+    assert translator.to_romanized("Bonjour", "fr") == "Bonjour"
+
+
+def test_to_romanized_failure_returns_input_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed transliteration call must not lose the answer."""
+    translator = IndicTranslator()
+
+    def _boom(text: str, language: str, from_script: str, to_script: str) -> Any:
+        raise RuntimeError("Azure Translator unreachable")
+
+    monkeypatch.setattr(translator, "_transliterate_request", _boom)
+
+    original = "उद्यम पंजीकरण"
+    assert translator.to_romanized(original, "hi") == original

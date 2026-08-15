@@ -158,9 +158,3 @@ def initial_state(user_query: str) -> SetuState:
         retries=0,
         citations=[],
     )
-
-
-# Module-level compiled graph, as the API and UI layers will import this.
-# Built at import time so graph construction errors surface immediately rather
-# than on the first request.
-graph = build_graph()

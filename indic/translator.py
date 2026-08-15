@@ -1,209 +1,89 @@
-"""Indic <-> English translation using AI4Bharat IndicTrans2 (distilled 200M).
+"""Indic <-> English translation using Azure AI Translator.
 
-The distilled 200M checkpoints are used rather than the 1B ones because this
-runs on CPU in the demo path, where the 1B model takes tens of seconds per
-query.
-
-IMPORTANT: the IndicTrans2 model repos on HuggingFace are GATED. You must accept
-the terms at https://huggingface.co/ai4bharat/indictrans2-indic-en-dist-200M and
-put a token in HUGGINGFACE_TOKEN before this module can load anything.
+Azure replaces a locally-loaded IndicTrans2 (previously ~2GB across two
+checkpoints, CPU-bound quadratic decoding) with an API call. Chosen over
+Sarvam AI's translate API for this project because Azure's free tier renews
+monthly and Sarvam's is a one-time, non-renewing signup credit.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar
+from collections.abc import Callable
+
+import httpx
 
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 # Citation markers emitted by the answer generator, e.g. "[39f4b029]". These must
-# survive translation byte-for-byte: IndicTrans2 otherwise transliterates them
-# into the target script ("[57எஃப்டி5பிபி0]"), which destroys the citation.
+# survive translation byte-for-byte, so they are isolated here before any text
+# reaches the translator.
 CITATION_RE = re.compile(r"\[[0-9a-fA-F]{6,}\]")
 
-# Long inputs get truncated at max_length, silently losing the end of an answer.
-# Anything longer than this is split on sentence boundaries and translated piece
-# by piece instead.
+# Azure's limit is 50,000 characters per request; this segment size is a
+# readability/citation-safety margin, not a workaround for that limit.
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।])\s+")
-MAX_CHARS_PER_SEGMENT = 300
+MAX_CHARS_PER_SEGMENT = 2000
 
-INDIC_TO_EN_MODEL = "ai4bharat/indictrans2-indic-en-dist-200M"
-EN_TO_INDIC_MODEL = "ai4bharat/indictrans2-en-indic-dist-200M"
+AZURE_TRANSLATE_URL = "https://api.cognitive.microsofttranslator.com/translate"
+AZURE_TRANSLITERATE_URL = "https://api.cognitive.microsofttranslator.com/transliterate"
+API_VERSION = "3.0"
 
-ENGLISH_TAG = "eng_Latn"
+ENGLISH_TAG = "en"
 
-# IndicTrans2 uses FLORES-200 tags. Detected languages are mapped here so a
-# caller can pass a plain ISO code like "hi" or "hin".
-LANG_TO_FLORES = {
-    "hi": "hin_Deva",
-    "hin": "hin_Deva",
-    "ta": "tam_Taml",
-    "tam": "tam_Taml",
-    "bn": "ben_Beng",
-    "ben": "ben_Beng",
-    "mr": "mar_Deva",
-    "mar": "mar_Deva",
-    "te": "tel_Telu",
-    "tel": "tel_Telu",
-    "kn": "kan_Knda",
-    "kan": "kan_Knda",
-    "ml": "mal_Mlym",
-    "mal": "mal_Mlym",
-    "gu": "guj_Gujr",
-    "guj": "guj_Gujr",
-    "pa": "pan_Guru",
-    "pan": "pan_Guru",
-    "or": "ory_Orya",
-    "ory": "ory_Orya",
-    "ur": "urd_Arab",
-    "urd": "urd_Arab",
-    "as": "asm_Beng",
-    "asm": "asm_Beng",
-    "en": ENGLISH_TAG,
-    "eng": ENGLISH_TAG,
+# Native script per Azure language code, for the languages this project
+# actually surfaces in the UI. Azure's /transliterate supports many more
+# language/script pairs; this only covers what to_romanized ever needs to
+# convert to Latin.
+NATIVE_SCRIPT = {"hi": "Deva", "ta": "Taml"}
+LATIN_SCRIPT = "Latn"
+
+# Azure uses plain ISO 639-1 codes with no script/region suffix. Detected
+# languages are mapped here so a caller can pass "hi", "hin", or a
+# script-tagged form like "hin_Deva" from IndicLID.
+LANG_TO_AZURE = {
+    "hi": "hi", "hin": "hi",
+    "ta": "ta", "tam": "ta",
+    "bn": "bn", "ben": "bn",
+    "mr": "mr", "mar": "mr",
+    "te": "te", "tel": "te",
+    "kn": "kn", "kan": "kn",
+    "ml": "ml", "mal": "ml",
+    "gu": "gu", "guj": "gu",
+    "pa": "pa", "pan": "pa",
+    "or": "or", "ory": "or",
+    "ur": "ur", "urd": "ur",
+    "as": "as", "asm": "as",
+    "en": ENGLISH_TAG, "eng": ENGLISH_TAG,
 }
 
 
-def to_flores(lang: str) -> str:
-    """Normalise a language identifier to a FLORES-200 tag.
-
-    Romanised input (for example "hin_Latn" from IndicLID) is mapped to the
-    native-script tag, because IndicTrans2 has no romanised input mode.
+def to_azure_lang(lang: str) -> str:
+    """Normalise a language identifier to an Azure Translator language code.
 
     Args:
-        lang: An ISO code ("hi"), an ISO-639-3 code ("hin"), or a full tag
-            ("hin_Deva", "hin_Latn").
+        lang: An ISO code ("hi"), an ISO-639-3 code ("hin"), or a script-tagged
+            form ("hin_Deva", "hin_Latn") — the script suffix is ignored, since
+            Azure has one code per language.
 
     Returns:
-        A FLORES-200 tag such as "hin_Deva".
+        An Azure language code such as "hi".
     """
-    if "_" in lang:
-        base, script = lang.split("_", 1)
-        if script == "Latn" and base not in {"eng"}:
-            # Transliterated Indic text: fall back to the native-script tag.
-            return LANG_TO_FLORES.get(base, ENGLISH_TAG)
-        return lang
-    return LANG_TO_FLORES.get(lang.lower(), ENGLISH_TAG)
+    base = lang.split("_", 1)[0].lower()
+    return LANG_TO_AZURE.get(base, ENGLISH_TAG)
 
 
 class IndicTranslator:
-    """Translate between Indic languages and English with IndicTrans2."""
+    """Translate between Indic languages and English via Azure AI Translator."""
 
-    # Models are ~1GB each; cached on the class so a request never reloads them.
-    _model_cache: ClassVar[dict[str, tuple[Any, Any]]] = {}
-
-    def __init__(
-        self,
-        device: str | None = None,
-        max_length: int = 256,
-        num_beams: int = 5,
-        batch_size: int = 4,
-    ) -> None:
-        """Configure the translator without loading any model.
-
-        Args:
-            device: Torch device. None auto-selects CUDA when available.
-            max_length: Maximum generated tokens per sentence.
-            num_beams: Beam width. 5 is the IndicTrans2 reference setting.
-            batch_size: Segments generated at once. Peak memory scales with
-                batch_size * num_beams, and a long answer can split into dozens
-                of segments — translating them all in one batch is enough to
-                exhaust RAM on a 16GB machine that is already holding BGE-M3 and
-                the reranker.
-        """
-        self.max_length = max_length
-        self.num_beams = num_beams
-        self.batch_size = batch_size
-        self._device = device
-        self._processor: Any | None = None
-
-    @property
-    def device(self) -> str:
-        """The torch device translation runs on.
-
-        Returns:
-            "cuda" when a GPU is present and none was forced, else "cpu".
-        """
-        if self._device is None:
-            import torch
-
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info("IndicTranslator using device: %s", self._device)
-        return self._device
-
-    # ------------------------------------------------------------- loading --
-
-    def _load(self, model_id: str) -> tuple[Any, Any]:
-        """Load and cache a tokenizer/model pair.
-
-        Args:
-            model_id: HuggingFace model id.
-
-        Returns:
-            (tokenizer, model), with the model already moved to the device.
-
-        Raises:
-            RuntimeError: If the gated repo cannot be accessed.
-        """
-        if model_id in self._model_cache:
-            return self._model_cache[model_id]
-
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
+    def __init__(self) -> None:
+        """Configure the translator."""
         settings = get_settings()
-        token = settings.HUGGINGFACE_TOKEN
-        auth = token.get_secret_value() if token else None
-
-        logger.info("Loading %s on %s (first use downloads ~1GB)", model_id, self.device)
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_id, trust_remote_code=True, token=auth
-            )
-            model = AutoModelForSeq2SeqLM.from_pretrained(
-                model_id, trust_remote_code=True, token=auth
-            )
-        except Exception as exc:  # noqa: BLE001 - turn a load failure into actionable guidance
-            detail = str(exc)
-            # Only blame gating when the error actually is gating; a memory or
-            # disk failure wearing an auth message sends you debugging the
-            # wrong thing entirely.
-            if "gated" in detail.lower() or "401" in detail or "restricted" in detail.lower():
-                hint = (
-                    f"IndicTrans2 repos are gated: accept the terms at "
-                    f"https://huggingface.co/{model_id} and set HUGGINGFACE_TOKEN in .env."
-                )
-            elif "paging file" in detail.lower() or "1455" in detail:
-                hint = (
-                    "Windows ran out of virtual memory (os error 1455). The pipeline holds "
-                    "~6GB of models; increase the page file size, or run fewer models per "
-                    "process."
-                )
-            else:
-                hint = "Check network access and available memory."
-            raise RuntimeError(
-                f"Could not load {model_id}. {hint} Underlying error: {type(exc).__name__}: {exc}"
-            ) from exc
-
-        model = model.to(self.device)
-        model.eval()
-        self._model_cache[model_id] = (tokenizer, model)
-        return tokenizer, model
-
-    @property
-    def processor(self) -> Any:
-        """The IndicTransToolkit preprocessor, loaded on first use.
-
-        Returns:
-            An IndicProcessor instance.
-        """
-        if self._processor is None:
-            from IndicTransToolkit.processor import IndicProcessor
-
-            self._processor = IndicProcessor(inference=True)
-        return self._processor
+        self._api_key = settings.AZURE_TRANSLATOR_KEY
+        self._region = settings.AZURE_TRANSLATOR_REGION
 
     # --------------------------------------------------------- translation --
 
@@ -212,8 +92,7 @@ class IndicTranslator:
         """Break text into translatable and verbatim pieces.
 
         Citation markers are isolated so they can be reattached untouched, and
-        long runs of prose are split on sentence boundaries so nothing is lost
-        to the generator's length limit.
+        very long runs of prose are split on sentence boundaries.
 
         Args:
             text: Text about to be translated.
@@ -243,13 +122,49 @@ class IndicTranslator:
                     expanded.append((True, (" " if index else "") + sentence))
         return expanded
 
+    def _segment_and_convert(self, text: str, convert: Callable[[str], str]) -> str:
+        """Split text into citation-safe pieces, convert each, and reassemble.
+
+        Shared by translation and transliteration: both need the same
+        citation-marker isolation, sentence splitting, and rejoining.
+
+        Args:
+            text: Text to process.
+            convert: Called with one translatable piece; returns its converted
+                form. Raising propagates to the caller unconverted.
+
+        Returns:
+            The reassembled, converted text. The input unchanged if it holds
+            nothing translatable.
+        """
+        pieces = self._segment(text)
+        to_convert = [piece for translate, piece in pieces if translate and piece.strip()]
+        if not to_convert:
+            return text
+
+        converted = [convert(piece) for piece in to_convert]
+
+        # Reassemble in original order, restoring citations byte-for-byte.
+        output: list[str] = []
+        index = 0
+        for translate, piece in pieces:
+            if translate and piece.strip():
+                output.append(converted[index])
+                index += 1
+            else:
+                output.append(piece)
+        joined = " ".join(part.strip() for part in output if part.strip())
+        # Segmenting can leave a space before trailing punctuation (including
+        # the Devanagari danda), which reads as a typo in the final answer.
+        return re.sub(r"\s+([.।,;:!?])", r"\1", joined).strip()
+
     def _translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
         """Run one translation in either direction.
 
         Args:
             text: Text to translate.
-            src_lang: FLORES-200 source tag.
-            tgt_lang: FLORES-200 target tag.
+            src_lang: Azure source language code.
+            tgt_lang: Azure target language code.
 
         Returns:
             The translated text, or the input unchanged if translation failed.
@@ -259,61 +174,10 @@ class IndicTranslator:
         if src_lang == tgt_lang:
             return text
 
-        model_id = EN_TO_INDIC_MODEL if src_lang == ENGLISH_TAG else INDIC_TO_EN_MODEL
-        pieces = self._segment(text)
-        to_translate = [piece for translate, piece in pieces if translate and piece.strip()]
-        if not to_translate:
-            return text
-
         try:
-            import torch
-
-            tokenizer, model = self._load(model_id)
-            prepared = self.processor.preprocess_batch(
-                to_translate, src_lang=src_lang, tgt_lang=tgt_lang
+            return self._segment_and_convert(
+                text, lambda piece: self._request(piece, src_lang, tgt_lang)
             )
-
-            translated: list[str] = []
-            for start in range(0, len(prepared), self.batch_size):
-                window = prepared[start : start + self.batch_size]
-                encoded = tokenizer(
-                    window, truncation=True, padding=True, return_tensors="pt"
-                ).to(self.device)
-
-                with torch.no_grad():
-                    generated = model.generate(
-                        **encoded,
-                        num_beams=self.num_beams,
-                        max_length=self.max_length,
-                        min_length=0,
-                        num_return_sequences=1,
-                        # REQUIRED with transformers >= 4.5x. IndicTrans2's remote
-                        # modelling code reads past_key_values[0][0].shape, i.e.
-                        # the legacy tuple cache. Newer transformers hands it an
-                        # EncoderDecoderCache whose first entry is None, raising
-                        # AttributeError. Disabling the cache avoids that path;
-                        # segments are short, so the cost is small.
-                        use_cache=False,
-                    )
-
-                decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
-                translated.extend(self.processor.postprocess_batch(decoded, lang=tgt_lang))
-                # Release the graph's activations before the next window.
-                del encoded, generated
-
-            # Reassemble in original order, restoring citations byte-for-byte.
-            output: list[str] = []
-            index = 0
-            for translate, piece in pieces:
-                if translate and piece.strip():
-                    output.append(translated[index])
-                    index += 1
-                else:
-                    output.append(piece)
-            joined = " ".join(part.strip() for part in output if part.strip())
-            # Segmenting can leave a space before trailing punctuation (including
-            # the Devanagari danda), which reads as a typo in the final answer.
-            return re.sub(r"\s+([.।,;:!?])", r"\1", joined).strip()
         except Exception as exc:  # noqa: BLE001 - never lose the user's query
             logger.error(
                 "Translation %s->%s failed (%s): %s; returning input unchanged",
@@ -324,31 +188,103 @@ class IndicTranslator:
             )
             return text
 
+    def _request(self, text: str, src_lang: str, tgt_lang: str) -> str:
+        """Call Azure Translator's /translate for one segment."""
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Ocp-Apim-Subscription-Key"] = self._api_key.get_secret_value()
+        if self._region:
+            headers["Ocp-Apim-Subscription-Region"] = self._region
+
+        response = httpx.post(
+            AZURE_TRANSLATE_URL,
+            params={"api-version": API_VERSION, "from": src_lang, "to": tgt_lang},
+            headers=headers,
+            json=[{"Text": text}],
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()[0]["translations"][0]["text"]
+
+    def _transliterate_request(self, text: str, language: str, from_script: str, to_script: str) -> str:
+        """Call Azure Translator's /transliterate for one segment."""
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Ocp-Apim-Subscription-Key"] = self._api_key.get_secret_value()
+        if self._region:
+            headers["Ocp-Apim-Subscription-Region"] = self._region
+
+        response = httpx.post(
+            AZURE_TRANSLITERATE_URL,
+            params={
+                "api-version": API_VERSION,
+                "language": language,
+                "fromScript": from_script,
+                "toScript": to_script,
+            },
+            headers=headers,
+            json=[{"Text": text}],
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()[0]["text"]
+
+    def to_romanized(self, text: str, lang: str) -> str:
+        """Convert native-script text into Latin-script (romanised) form.
+
+        For Hinglish input: the user wrote their query in Latin script, so the
+        answer should come back the same way rather than in Devanagari/Tamil
+        they may not read fluently.
+
+        Args:
+            text: Native-script text, already translated into `lang`.
+            lang: The text's language, as an ISO code or tag.
+
+        Returns:
+            The romanised text. Unchanged if transliteration failed, or if
+            `lang` has no supported native-script mapping (NATIVE_SCRIPT).
+        """
+        if not text or not text.strip():
+            return text
+        azure_lang = to_azure_lang(lang)
+        script = NATIVE_SCRIPT.get(azure_lang)
+        if script is None:
+            return text
+
+        try:
+            return self._segment_and_convert(
+                text,
+                lambda piece: self._transliterate_request(piece, azure_lang, script, LATIN_SCRIPT),
+            )
+        except Exception as exc:  # noqa: BLE001 - a native-script answer beats no answer
+            logger.error(
+                "Transliteration %s->Latn failed (%s): %s; returning input unchanged",
+                azure_lang,
+                type(exc).__name__,
+                exc,
+            )
+            return text
+
     def to_english(self, text: str, src_lang: str) -> str:
         """Translate Indic text into English for retrieval.
 
         Args:
             text: Text in an Indic language.
-            src_lang: Source language as an ISO code or FLORES tag.
+            src_lang: Source language as an ISO code or tag.
 
         Returns:
             The English translation, or the input unchanged on failure.
         """
-        return self._translate(text, to_flores(src_lang), ENGLISH_TAG)
+        return self._translate(text, to_azure_lang(src_lang), ENGLISH_TAG)
 
     def from_english(self, text: str, tgt_lang: str) -> str:
         """Translate English text into an Indic language for display.
 
         Args:
             text: English text.
-            tgt_lang: Target language as an ISO code or FLORES tag.
+            tgt_lang: Target language as an ISO code or tag.
 
         Returns:
             The translated text, or the input unchanged on failure.
         """
-        return self._translate(text, ENGLISH_TAG, to_flores(tgt_lang))
-
-    @classmethod
-    def clear_cache(cls) -> None:
-        """Drop cached models so tests and long-running processes can free memory."""
-        cls._model_cache.clear()
+        return self._translate(text, ENGLISH_TAG, to_azure_lang(tgt_lang))
