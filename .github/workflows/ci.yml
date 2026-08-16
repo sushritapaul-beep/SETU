@@ -44,8 +44,11 @@ jobs:
           pip install -r requirements.txt
       - name: Run offline tests
         # tests/ is fully mocked, so no Qdrant, no LLM and no model downloads.
-        # -m "not deepeval" is belt-and-braces; testpaths already excludes eval/.
-        run: pytest tests/ -v -m "not deepeval"
+        # No -m override here: pytest's CLI -m replaces pyproject.toml's
+        # addopts marker expression rather than combining with it, so passing
+        # one here would silently re-admit the network-dependent `integration`
+        # tests that addopts excludes by default.
+        run: pytest tests/ -v
 
   eval-nightly:
     name: eval (deepeval quality gate)

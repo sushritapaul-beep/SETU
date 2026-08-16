@@ -206,7 +206,9 @@ class IndicTranslator:
         response.raise_for_status()
         return response.json()[0]["translations"][0]["text"]
 
-    def _transliterate_request(self, text: str, language: str, from_script: str, to_script: str) -> str:
+    def _transliterate_request(
+        self, text: str, language: str, from_script: str, to_script: str
+    ) -> str:
         """Call Azure Translator's /transliterate for one segment."""
         headers = {"Content-Type": "application/json"}
         if self._api_key:
