@@ -37,21 +37,26 @@ ingestion filter with a quality floor.
                        ▼
            Jina embeddings-v3 (1024-d) ──▶ Qdrant Cloud `setu-schemes`
                                            dense (cosine) + sparse (BM25/IDF)
-
-                          QUERY (online)
-  user query
-     │
-     ├─ detect_language        IndicLID FTN/FTR → hin_Deva | tam_Taml | hin_Latn | en  (local)
-     ├─ translate_query_to_en  Azure AI Translator  (API call, no-op if English)
-     ├─ classify_intent        eligibility | procedure | list | benefit_amount
-     ├─ extract_profile        natural language → {turnover_lakhs, state, ...}
-     ├─ retrieve_hybrid    ◀───────────────┐    dense + BM25, fused by RRF in Qdrant Cloud
-     ├─ rerank                             │    Jina reranker-v2 (API call)
-     ├─ check_eligibility                  │    pure Python, no LLM
-     ├─ generate_answer                    │    Groq (qwen3.6-27b), grounded, cites chunk ids
-     ├─ self_critique ─────────────────────┘    faithfulness < 0.7 and retries < 2
-     └─ translate_answer_from_en                Azure AI Translator, back to the user's language
 ```
+
+**QUERY (online)** — the LangGraph agent, swim-lane by layer (client/API,
+agent logic, external services), with the self-critique retry loop and every
+external API call labeled:
+
+**[View / edit the full diagram on Excalidraw →](https://excalidraw.com/#json=qziG1Hi5EGicCjcwtWaSo,XAc6YoYxfh_sfbOUMEyI7A)**
+
+| Node | What it does | Where it runs |
+|---|---|---|
+| `detect_language` | IndicLID FTN/FTR → `hin_Deva` \| `tam_Taml` \| `hin_Latn` \| `en` | local |
+| `translate_query_to_en` | no-op if already English | Azure AI Translator |
+| `classify_intent` | eligibility \| procedure \| list \| benefit_amount | Groq (`qwen3.6-27b`) |
+| `extract_profile` | natural language → `{turnover_lakhs, state, ...}` | Groq |
+| `retrieve_hybrid` ◀── retry target | dense + BM25, fused by RRF | Qdrant Cloud |
+| `rerank` | cross-encoder reordering | Jina `reranker-v2` |
+| `check_eligibility` | pure Python, no LLM | local, deterministic |
+| `generate_answer` | grounded, cites chunk ids | Groq |
+| `self_critique` ── retry if faithfulness < 0.7 and retries < 2 ──▶ back to `retrieve_hybrid` | Groq |
+| `translate_answer_from_en` | back to the user's language | Azure AI Translator |
 
 Everything above the `retrieve_hybrid` fan-in used to run as ~6GB of locally-loaded
 models (BGE-M3, bge-reranker-v2-m3, IndicTrans2). It's all API calls now — see
