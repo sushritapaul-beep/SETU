@@ -39,28 +39,72 @@ ingestion filter with a quality floor.
                                            dense (cosine) + sparse (BM25/IDF)
 ```
 
-**QUERY (online)** — the LangGraph agent, collapsed into four stages
-(Understand → Retrieve & Rank → Verify & Generate → Localize), with the
-self-critique retry loop and every external dependency labeled:
+**QUERY (online)** — every LangGraph node, not collapsed (README's diagram
+trades this detail for a one-glance summary; this one is the full reference):
 
-**[View the architecture reference →](https://claude.ai/code/artifact/c318105b-ad70-41b4-bd37-561217c15036)**
-— a vector one-pager built for external/showcase use. An editable
-whiteboard-style version of the same flow, one level more granular (all ten
-LangGraph node names, not collapsed into four stages), is also available:
-**[view / edit on Excalidraw →](https://excalidraw.com/#json=qziG1Hi5EGicCjcwtWaSo,XAc6YoYxfh_sfbOUMEyI7A)**.
+```mermaid
+flowchart LR
+    U(["User"]) --> UI["Chainlit UI"] --> API["FastAPI<br/>/query · /query/stream"]
 
-| Node | What it does | Where it runs |
-|---|---|---|
-| `detect_language` | IndicLID FTN/FTR → `hin_Deva` \| `tam_Taml` \| `hin_Latn` \| `en` | local |
-| `translate_query_to_en` | no-op if already English | Azure AI Translator |
-| `classify_intent` | eligibility \| procedure \| list \| benefit_amount | Groq (`qwen3.6-27b`) |
-| `extract_profile` | natural language → `{turnover_lakhs, state, ...}` | Groq |
-| `retrieve_hybrid` ◀── retry target | dense + BM25, fused by RRF | Qdrant Cloud |
-| `rerank` | cross-encoder reordering | Jina `reranker-v2` |
-| `check_eligibility` | pure Python, no LLM | local, deterministic |
-| `generate_answer` | grounded, cites chunk ids | Groq |
-| `self_critique` ── retry if faithfulness < 0.7 and retries < 2 ──▶ back to `retrieve_hybrid` | Groq |
-| `translate_answer_from_en` | back to the user's language | Azure AI Translator |
+    subgraph AGENT["LangGraph agent"]
+        direction LR
+        DET["detect_language<br/><i>IndicLID · local</i>"]
+        TRQ["translate_query_to_en"]
+        CLS["classify_intent"]
+        EXP["extract_profile"]
+        RET["retrieve_hybrid<br/><i>dense+BM25, RRF</i>"]
+        RER["rerank<br/><i>cross-encoder</i>"]
+        ELG{{"check_eligibility<br/><b>deterministic</b>"}}
+        GEN["generate_answer<br/><i>grounded, cites ids</i>"]
+        CRIT{"self_critique<br/>faithful ≥ 0.7?"}
+        TRA["translate_answer_from_en"]
+
+        DET --> TRQ --> CLS --> EXP --> RET --> RER --> ELG --> GEN --> CRIT
+        CRIT -->|"no · retries &lt; 2<br/>rewrite query"| RET
+        CRIT -->|yes| TRA
+    end
+
+    API --> DET
+    TRA -->|"answer + citations"| API
+
+    subgraph EXT["External services"]
+        direction TB
+        GROQ[("Groq<br/>qwen3.6-27b")]
+        JINA[("Jina AI<br/>embed + rerank")]
+        AZ[("Azure AI<br/>Translator")]
+        QD[("Qdrant Cloud<br/>hybrid vector DB")]
+    end
+
+    RULES[/"eligibility_rules.json<br/>hand-authored"/]
+    LF{{"Langfuse — traces every node"}}
+
+    CLS -.-> GROQ
+    GEN -.-> GROQ
+    CRIT -.-> GROQ
+    RER -.-> JINA
+    TRQ -.-> AZ
+    TRA -.-> AZ
+    RET -.-> QD
+    ELG -.-> RULES
+    DET -.- LF -.- TRA
+
+    classDef det fill:#0b7285,stroke:#063d47,color:#ffffff,stroke-width:2px
+    classDef io fill:#1864ab,stroke:#0d3f6e,color:#ffffff,stroke-width:2px
+    classDef ext fill:#c2410c,stroke:#7c2d12,color:#ffffff,stroke-width:2px
+    classDef obs fill:#495057,stroke:#212529,color:#ffffff,stroke-width:2px,stroke-dasharray:4 3
+
+    class ELG,RULES det
+    class U,UI,API io
+    class GROQ,JINA,AZ,QD ext
+    class LF obs
+```
+
+Two things the diagram states but doesn't argue for — the reasoning is worth
+having in words: the retry edge (`self_critique → no → retrieve_hybrid`)
+rewrites the *query*, not just the prompt, because a bad answer is usually a
+symptom of bad retrieval, not bad phrasing. And `check_eligibility` (teal,
+deterministic) is the one node with no dashed line to an LLM —
+intentionally the only verdict in this system a model can never produce.
 
 Everything above the `retrieve_hybrid` fan-in used to run as ~6GB of locally-loaded
 models (BGE-M3, bge-reranker-v2-m3, IndicTrans2). It's all API calls now — see
