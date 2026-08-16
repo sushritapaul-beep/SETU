@@ -280,13 +280,25 @@ The Chainlit UI (`ui/chainlit_app.py`) is a thin HTTP client over
 can restart independently of the API and deploys as its own, much smaller,
 container (`ui/Dockerfile`, `ui/requirements.txt`).
 
-Both containers deploy to Render as two free-tier web services defined in
-[`render.yaml`](../render.yaml); the full runbook, including a real bug this
-caught (the API `Dockerfile` hardcoded port 8000 instead of binding
-Render's `$PORT`, and `retrieval/vectorstore.py`'s `from ingestion.chunker
-import Chunk` was never actually reachable in the API image because
-`Dockerfile` never copied `ingestion/`), is in
-[`docs/DEPLOY.md`](DEPLOY.md).
+Both containers deploy the same way regardless of target: the root
+`Dockerfile` and `ui/Dockerfile`, unmodified, built directly from this repo.
+Five targets are documented under [`deploy/`](../deploy/) plus
+[`render.yaml`](../render.yaml)/[`docs/DEPLOY.md`](DEPLOY.md) for Render —
+each fits a different constraint, not a strict ranking:
+
+| Target | Fits when |
+|---|---|
+| [`deploy/oracle/`](../deploy/oracle/) + [`docker-compose.yml`](../docker-compose.yml) | Continuous 24/7 uptime matters — the only target whose free allocation isn't metered by awake-time, so it's the one place a keep-alive monitor is the *correct* tool rather than counterproductive |
+| [`deploy/zeabur/`](../deploy/zeabur/) | Occasional cold starts (a few seconds after idle) are acceptable — architecturally cannot bill you, since no payment method is ever attached to the account |
+| [`deploy/gcloud/`](../deploy/gcloud/) | The strongest platform technically (configurable request timeout to 3600s, real SLA-backed infra) at the cost of a card on file |
+| [`deploy/huggingface/`](../deploy/huggingface/) | Already paying for HF PRO for other reasons |
+| Render (`render.yaml`, `docs/DEPLOY.md`) | The original target; caught two real bugs worth knowing about regardless of where you deploy — the API `Dockerfile` hardcoded port 8000 instead of binding Render's `$PORT`, and `retrieval/vectorstore.py`'s `from ingestion.chunker import Chunk` was never actually reachable in the API image because `Dockerfile` never copied `ingestion/` |
+
+`setu-api`'s IndicLID models are pre-warmed during FastAPI's `lifespan`
+startup hook and baked into the image at build time (`Dockerfile`), rather
+than downloaded lazily on the first request — the first real query on a
+cold container used to pay that cost inline; now it lands during startup,
+before `/health` reports ready, on every target above alike.
 
 ---
 

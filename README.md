@@ -72,7 +72,7 @@ pipeline: the graph scores its own answer and can go back and search differently
 **Evaluation:** RAGAS + DeepEval CI gate over a 25-query gold set
 
 Full component-by-component walkthrough: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
-Deploying to Render: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Deploying: **[deploy/](deploy/)** — five targets compared, pick by constraint (continuous uptime, zero card risk, etc.); Render's own runbook is **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ## Quickstart
 
@@ -236,8 +236,8 @@ Stated plainly — a reviewer will find these anyway.
 - [ ] Voice input via AI4Bharat IndicWhisper
 - [ ] Per-state scheme filtering from the extracted profile
 - [ ] Structured "documents you need" checklist as a separate deterministic tool
-- [ ] Deploy to Render — blueprint ([render.yaml](render.yaml)) and runbook
-      ([docs/DEPLOY.md](docs/DEPLOY.md)) are ready; not yet actually deployed
+- [ ] Actually deploy — five targets are ready and validated in [deploy/](deploy/)
+      (plus Render's [render.yaml](render.yaml)/[docs/DEPLOY.md](docs/DEPLOY.md)); none deployed live yet
 
 ## Credits
 

@@ -1,0 +1,69 @@
+# SETU on a single host (Oracle Cloud Always Free A1, or any Docker host).
+#
+# Three services, one internal network, nothing published to the host:
+# cloudflared tunnels straight to `ui` by service name, and `ui` reaches
+# `api` the same way, over SETU_API_URL=http://api:8000 - no port mapping,
+# no firewall rule, no public IP exposure beyond what the tunnel forwards.
+# See deploy/oracle/README.md for the full setup (instance, Docker install,
+# tunnel token, keep-alive). Both Dockerfiles are unchanged from every other
+# deploy target in this repo.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      LLM_PROVIDER: groq
+      GROQ_MODEL: qwen/qwen3.6-27b
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      JINA_API_KEY: ${JINA_API_KEY}
+      AZURE_TRANSLATOR_KEY: ${AZURE_TRANSLATOR_KEY}
+      AZURE_TRANSLATOR_REGION: ${AZURE_TRANSLATOR_REGION}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      QDRANT_COLLECTION: setu-schemes
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: https://cloud.langfuse.com
+      API_KEY: ${API_KEY}
+      # Compose's internal network is not the public internet - the API is
+      # only ever reached by `ui` over the network below, so a same-host
+      # origin list is enough; nothing browser-facing calls it directly.
+      ALLOWED_ORIGINS: http://ui:8000
+      LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      SETU_API_URL: http://api:8000
+      SETU_API_KEY: ${API_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      ui:
+        condition: service_healthy
