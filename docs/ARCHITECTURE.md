@@ -39,11 +39,15 @@ ingestion filter with a quality floor.
                                            dense (cosine) + sparse (BM25/IDF)
 ```
 
-**QUERY (online)** — the LangGraph agent, swim-lane by layer (client/API,
-agent logic, external services), with the self-critique retry loop and every
-external API call labeled:
+**QUERY (online)** — the LangGraph agent, collapsed into four stages
+(Understand → Retrieve & Rank → Verify & Generate → Localize), with the
+self-critique retry loop and every external dependency labeled:
 
-**[View / edit the full diagram on Excalidraw →](https://excalidraw.com/#json=qziG1Hi5EGicCjcwtWaSo,XAc6YoYxfh_sfbOUMEyI7A)**
+**[View the architecture reference →](https://claude.ai/code/artifact/c318105b-ad70-41b4-bd37-561217c15036)**
+— a vector one-pager built for external/showcase use. An editable
+whiteboard-style version of the same flow, one level more granular (all ten
+LangGraph node names, not collapsed into four stages), is also available:
+**[view / edit on Excalidraw →](https://excalidraw.com/#json=qziG1Hi5EGicCjcwtWaSo,XAc6YoYxfh_sfbOUMEyI7A)**.
 
 | Node | What it does | Where it runs |
 |---|---|---|
