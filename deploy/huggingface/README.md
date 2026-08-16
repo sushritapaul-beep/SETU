@@ -31,8 +31,8 @@ the whole repo as build context.
 doesn't — it deliberately builds from the *repo* root (not `ui/`) to reach
 `.chainlit/`, `public/`, and `chainlit.md`, which live there for Render's
 sake. Rather than moving those three (which would break the documented local
-dev commands in `README.md`/`docs/DEMO.md` and `ui/chainlit_app.py`'s own
-docstring, all of which run `chainlit run ui/chainlit_app.py` from the repo
+dev commands in `README.md` and `ui/chainlit_app.py`'s own docstring, both
+of which run `chainlit run ui/chainlit_app.py` from the repo
 root), `deploy/ui-standalone/Dockerfile` holds a self-contained variant that
 expects them copied alongside it instead. Nothing in the working tree
 changes. `gcloud run deploy --source` has the identical constraint (see
