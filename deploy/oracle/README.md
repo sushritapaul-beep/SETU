@@ -1,17 +1,12 @@
-# Oracle Cloud Always Free deploy — recommended for continuous uptime
+# Oracle Cloud Always Free deploy
 
-Chosen over every other target in `deploy/` specifically because it's the
-only one that's simultaneously perpetual, sufficient in RAM, and structurally
-built for continuous 24/7 operation. Render/Zeabur/Cloud Run/Azure Container
-Apps/HF Spaces are all metered by *active or awake compute time* — 720
-hours/month of continuous wakefulness blows through every one of their free
-grants (Zeabur's $5 credit alone: 2GB × $0.015/GB-hr × 720hr ≈ $21.60/month,
-over 4x the free allowance). Oracle's Always Free A1 shape is priced in
-OCPU-hours/GB-hours regardless of whether it's idle or serving a request, so
-staying on continuously is the *expected* usage pattern, not an edge case
-that burns a credit. Use this target if the demo needs to be reachable at any
-time without a cold-start delay; use `deploy/zeabur/` instead if occasional
-cold starts are acceptable — it needs far less setup.
+Oracle's Always Free A1 shape is priced in OCPU-hours/GB-hours regardless of
+whether the instance is idle or serving a request, so staying on
+continuously is the *expected* usage pattern within the free grant, not an
+edge case that burns through a credit — most other free-tier hosts meter
+*active or awake compute time* instead, where 720 hours/month of continuous
+wakefulness blows through the free allowance. That makes this the target for
+a service that needs to be reachable at any time without a cold-start delay.
 
 **docker-compose.yml** (repo root) is the actual deploy artifact for this
 target — both existing Dockerfiles, unchanged, plus `cloudflared` for the
@@ -27,9 +22,8 @@ Console → **Compute → Instances → Create instance**.
   "1,500 OCPU hours and 9,000 GB hours per month... equivalent to 2 OCPUs
   and 12 GB of memory"). Don't split this into two smaller instances unless
   you specifically want to isolate `api` and `ui` onto separate hosts —
-  running both on one 12GB instance is simpler and this repo's own testing
-  (`docs/DEPLOYMENT_HANDOFF.md` §4) measured `setu-api` alone at ~1.4GB peak,
-  leaving ample room.
+  running both on one 12GB instance is simpler, and `setu-api`'s measured
+  ~1.4GB peak RAM leaves ample room.
 - **Image**: Ubuntu (latest LTS), **ARM64/Ampere** build — not the x86 image.
 - **Networking**: default VCN, public IP assigned automatically (Always Free
   includes one public IP per instance).
@@ -114,12 +108,10 @@ docker compose ps        # both api and ui should report "healthy"
 docker compose logs -f   # watch startup; Ctrl-C to stop watching, containers keep running
 ```
 
-The images build directly on the instance — no external registry involved,
-matching how every other Docker validation in this repo has worked. Expect
-the `api` image build to include the ARM64 IndicLID model-bake step; this
-repo's own cross-platform build test (same root `Dockerfile`, `linux/arm64`
-target) completed successfully with every dependency installing from a
-prebuilt `aarch64` wheel — no compilation, no expected surprises here.
+The images build directly on the instance — no external registry involved.
+Expect the `api` image build to include the ARM64 IndicLID model-bake step;
+every dependency in `api/requirements.txt` has a confirmed prebuilt
+`aarch64` wheel, so the `linux/arm64` build needs no compilation.
 
 ## 6. Keep it reachable — the idle-reclamation mitigation
 
@@ -130,21 +122,21 @@ a scheduled ping against a real endpoint (an uptime monitor like
 UptimeRobot, or a cron job) hitting `https://<your-tunnel-hostname>/health`
 every few minutes.
 
-**This is the one platform in this whole deployment effort where that
-instinct is correct — do the opposite of what you'd do on Zeabur.** Zeabur
-bills for awake-time, so a keep-alive there burns through the free credit in
-days. Oracle doesn't meter uptime at all within its OCPU-hour/GB-hour caps —
-the only risk is being reclaimed for looking *too idle*, so keeping it awake
-costs nothing extra and directly addresses that risk.
+**Oracle is the one target among the five in `deploy/` where a keep-alive
+monitor is the correct tool, not a counterproductive one — the opposite of
+Zeabur.** Zeabur bills for awake-time, so a keep-alive there burns through
+the free credit in days. Oracle doesn't meter uptime at all within its
+OCPU-hour/GB-hour caps — the only risk is being reclaimed for looking *too
+idle*, so keeping it awake costs nothing extra and directly addresses that
+risk.
 
-One honestly-flagged gap: Oracle's reclamation threshold is a rolling
-utilization *percentage*, and this project's research could not confirm from
-Oracle's own documentation whether a lightweight `GET /health` ping alone
-generates enough measured CPU/network/memory activity to clear 20%, versus
-needing something heavier. **Check the actual utilization graphs in the
-Oracle console (Instance → Metrics) after the first week** and confirm they
-read above the threshold — don't assume the ping alone is sufficient without
-looking.
+One gap worth flagging: Oracle's reclamation threshold is a rolling
+utilization *percentage*, and Oracle's own documentation doesn't state
+whether a lightweight `GET /health` ping alone generates enough measured
+CPU/network/memory activity to clear 20%, versus needing something heavier.
+**Check the actual utilization graphs in the Oracle console (Instance →
+Metrics) after the first week** and confirm they read above the threshold —
+don't assume the ping alone is sufficient without looking.
 
 ## 7. Verify
 

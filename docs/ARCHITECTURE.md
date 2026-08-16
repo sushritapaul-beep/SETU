@@ -106,9 +106,11 @@ symptom of bad retrieval, not bad phrasing. And `check_eligibility` (teal,
 deterministic) is the one node with no dashed line to an LLM —
 intentionally the only verdict in this system a model can never produce.
 
-Everything above the `retrieve_hybrid` fan-in used to run as ~6GB of locally-loaded
-models (BGE-M3, bge-reranker-v2-m3, IndicTrans2). It's all API calls now — see
-§5 and §9 for why, and what changed as a result.
+Everything above the `retrieve_hybrid` fan-in runs as a managed API call rather
+than an in-process model — see §5 for the translation layer's reasoning. Only
+language identification and the deterministic rules engine ever load in the
+serving container, which is what keeps its memory footprint small enough to
+run comfortably on a single free-tier host.
 
 ---
 
@@ -190,8 +192,8 @@ deterministically. The original hex id is kept in the payload for citations.
 Bi-encoders embed query and document separately — fast, approximate. A
 cross-encoder reads the pair together — far too slow for a corpus, ideal for the
 top ~20. Jina's `jina-reranker-v2-base-multilingual` runs this as an API call
-rather than a locally-loaded ~2GB model. Measured pre-migration, on the older
-45-chunk corpus and the local `bge-reranker-v2-m3`:
+rather than an in-process model. `scripts/smoke_retrieval.py` runs a fixed
+in-corpus and out-of-corpus query pair through it on demand:
 
 | Query | Top rerank score |
 |---|---|
@@ -200,10 +202,6 @@ rather than a locally-loaded ~2GB model. Measured pre-migration, on the older
 
 That two-orders-of-magnitude gap is what makes `rerank_score` a usable relevance
 gate — the agent can say *"I don't have that scheme"* instead of confabulating.
-The gap itself is a property of cross-encoder reranking generally, not this
-specific model; the exact numbers haven't been re-measured against Jina's
-reranker or the current 234-chunk corpus. `scripts/smoke_retrieval.py`
-reproduces this check on demand.
 
 ---
 
@@ -229,25 +227,25 @@ Two non-obvious details:
 
 Language ID stays local deliberately — the model is small and fast, and
 routing a sub-10ms call through a network round trip would only add latency
-for a component that was never the RAM problem (see §9).
+for no benefit; unlike embeddings, reranking, and translation, it was never
+a meaningful contributor to the serving container's memory footprint.
 
 ### `indic/translator.py`
-Azure AI Translator, in both directions, via a plain HTTP call — not a
-locally-loaded model. This replaced a local IndicTrans2 (200M distilled, both
-directions) that cost ~2GB of RAM and decoded quadratically on CPU; Azure's
-free F0 tier (2M characters/month) removed both the memory footprint and the
-translation latency. Retrieval and generation still always happen in
-English — translating at the edges is far cheaper and more accurate than
-maintaining one index per language, independent of which backend translates.
+Azure AI Translator, in both directions, via a plain HTTP call rather than an
+in-process model — the free F0 tier covers 2M characters/month, and offloading
+translation to a managed API keeps this component's memory footprint at zero.
+Retrieval and generation still always happen in English — translating at the
+edges is far cheaper and more accurate than maintaining one index per
+language.
 
 **Citations are held out of translation.** A raw chunk-id marker sent to any
 MT engine risks transliteration or mangling — `[57fd5bb0]` becoming
 `[57எஃப்டி5பிபி0]`, destroying the citation. `_segment()` splits text into
 translatable prose and verbatim citation markers, translates only the prose,
-and reassembles byte-for-byte. This protection is backend-agnostic by design;
-it survived the IndicTrans2 → Azure migration unchanged. `to_romanized()`
-(below) reuses the same split/reassemble logic via a shared
-`_segment_and_convert()` helper, so citation markers survive romanisation too.
+and reassembles byte-for-byte, independent of which backend performs the
+translation. `to_romanized()` (below) reuses the same split/reassemble logic
+via a shared `_segment_and_convert()` helper, so citation markers survive
+romanisation too.
 
 **Hinglish answers come back in Latin script, not Devanagari.** A user who
 types `ZED certification ke liye kya documents chahiye` wrote in Latin script;
@@ -257,12 +255,11 @@ separate `/transliterate` endpoint (`hi`/`ta` Deva/Taml → Latn — verified
 against Microsoft's language-support table and live-tested against a real
 key) after `from_english()` produces the native-script answer.
 `translate_answer_from_en` triggers it whenever `state["script"] == "Latn"` —
-**not** whenever `state["lang"] == "code_mixed"`, which was the first attempt
-and was wrong: IndicLID reports `lang="hin", script="Latn"` (a single
-confident language) for many genuinely-romanised queries, and only labels
-input `code_mixed` when two languages both clear its confidence threshold.
-Gating on `code_mixed` alone silently skipped the single-language case, caught
-by testing against the real graph rather than trusting the mocked unit tests.
+**not** whenever `state["lang"] == "code_mixed"`. IndicLID reports
+`lang="hin", script="Latn"` (a single confident language) for many
+genuinely-romanised queries, and only labels input `code_mixed` when two
+languages both clear its confidence threshold, so gating on `code_mixed`
+alone would silently skip the single-language case.
 
 ---
 
@@ -333,25 +330,19 @@ The Chainlit UI (`ui/chainlit_app.py`) is a thin HTTP client over
 can restart independently of the API and deploys as its own, much smaller,
 container (`ui/Dockerfile`, `ui/requirements.txt`).
 
-Both containers deploy the same way regardless of target: the root
-`Dockerfile` and `ui/Dockerfile`, unmodified, built directly from this repo.
-Five targets are documented under [`deploy/`](../deploy/) plus
-[`render.yaml`](../render.yaml)/[`docs/DEPLOY.md`](DEPLOY.md) for Render —
-each fits a different constraint, not a strict ranking:
-
-| Target | Fits when |
-|---|---|
-| [`deploy/oracle/`](../deploy/oracle/) + [`docker-compose.yml`](../docker-compose.yml) | Continuous 24/7 uptime matters — the only target whose free allocation isn't metered by awake-time, so it's the one place a keep-alive monitor is the *correct* tool rather than counterproductive |
-| [`deploy/zeabur/`](../deploy/zeabur/) | Occasional cold starts (a few seconds after idle) are acceptable — architecturally cannot bill you, since no payment method is ever attached to the account |
-| [`deploy/gcloud/`](../deploy/gcloud/) | The strongest platform technically (configurable request timeout to 3600s, real SLA-backed infra) at the cost of a card on file |
-| [`deploy/huggingface/`](../deploy/huggingface/) | Already paying for HF PRO for other reasons |
-| Render (`render.yaml`, `docs/DEPLOY.md`) | The original target; caught two real bugs worth knowing about regardless of where you deploy — the API `Dockerfile` hardcoded port 8000 instead of binding Render's `$PORT`, and `retrieval/vectorstore.py`'s `from ingestion.chunker import Chunk` was never actually reachable in the API image because `Dockerfile` never copied `ingestion/` |
+Both containers deploy the same way: the root `Dockerfile` and
+`ui/Dockerfile`, unmodified, run via `docker-compose.yml` on an
+[Oracle Cloud Always Free](../deploy/oracle/) instance — see
+[`deploy/`](../deploy/) for the full setup. Oracle's Always Free A1 shape is
+priced by allocation (2 OCPU/12GB) rather than by active or awake compute
+time, which is what makes it fit a service that needs to be reachable at any
+time, including via a keep-alive monitor.
 
 `setu-api`'s IndicLID models are pre-warmed during FastAPI's `lifespan`
 startup hook and baked into the image at build time (`Dockerfile`), rather
-than downloaded lazily on the first request — the first real query on a
-cold container used to pay that cost inline; now it lands during startup,
-before `/health` reports ready, on every target above alike.
+than downloaded lazily on the first request — so `/health` doesn't report
+ready until model loading has finished, and no real query ever pays that
+cost inline.
 
 ---
 
@@ -378,32 +369,31 @@ Stated plainly, because a reviewer will find them anyway.
 
 | Limitation | Detail |
 |---|---|
-| **Corpus is 44 schemes** | 234 chunks. Anything else returns an honest "not in my sources". Grown from an original 5-scheme/45-chunk corpus via a broader official-source crawl; still a fraction of the hundreds of live MSME/welfare schemes. |
+| **Corpus is 44 schemes** | 234 chunks. Anything else returns an honest "not in my sources". Adding schemes means adding source URLs and re-running ingest; still a fraction of the hundreds of live MSME/welfare schemes. |
 | **Source errors propagate** | The Design Scheme page reads `₹ 40,000,00/-` (likely ₹40,00,000). SETU reproduces it verbatim. Grounding works; the source is wrong. Cited, not corrected. |
-| **Romanised Hindi vs Urdu** | Nearly indistinguishable transliterated; IndicLID sometimes prefers `urd_Latn`. Unaffected by the translation-backend migration — this is a language-*detection* limitation, upstream of translation. |
-| **Post-migration faithfulness regression (0.933 → 0.857) is unresolved** | Re-measured against the current Jina/Azure/`qwen3.6-27b` stack; below the 0.90 target. Two evidenced causes (see `README.md` Evaluation section): Jina's reranker surfacing a tangentially-related chunk from a different scheme in at least one top-5, and `qwen3.6-27b` triggering the deterministic eligibility block — accurate rule-engine output, but invisible to a metric that checks claims against retrieved passages — more often than the prior model did. Neither is fixed yet. |
+| **Romanised Hindi vs Urdu** | Nearly indistinguishable transliterated; IndicLID sometimes prefers `urd_Latn`. A language-*detection* limitation, upstream of translation, independent of which backend translates. |
+| **Faithfulness sits at 0.857, below the 0.90 target** | Two evidenced causes (see `README.md` Evaluation section): Jina's reranker surfacing a tangentially-related chunk from a different scheme in at least one top-5, and `qwen3.6-27b` triggering the deterministic eligibility block frequently — accurate rule-engine output, but invisible to a metric that checks claims against retrieved passages. Neither is fixed yet. |
 | **RAGAS needs a shim** | ragas 0.4.3 imports `langchain_community.chat_models.vertexai`, removed in langchain-community 0.4.x. A stub module is registered in `eval/ragas_eval.py`. Real workaround, documented as one. |
 | **Token budgets are approximate** | 4 chars/token. Devanagari and Tamil tokenize less efficiently, so real Indic chunks exceed 512 tokens. |
-| **This machine's chronic RAM pressure drove the cloud migration** | The pipeline originally held ~6GB locally (BGE-M3, the reranker, IndicTrans2) on a 16GB dev machine already committing far more than that between the OS, an IDE, and Docker — the direct cause of repeated `MemoryError`s and silent fallback degradation during development. Embeddings, reranking, and translation now run as Jina/Azure API calls specifically to remove that ceiling; IndicLID and the deterministic eligibility engine stay local because they were never the problem. |
 | **Feedback persistence is a minimal stub, not a real data layer** | Chainlit's thumbs-up/down UI requires implementing its `BaseDataLayer` (18 methods) to appear at all. Only `upsert_feedback`/`delete_feedback` do real work, writing to a local SQLite file (`data/feedback.sqlite3`) — there's no thread-history/resume feature backing the other 16, which are deliberate no-ops. Fine for a single-instance deployment; would need a real backing store to survive across container restarts or multiple instances. |
 
 ---
 
 ## 10. Testing
 
-189 tests total, in two tiers:
+190 tests total, in two tiers:
 
-- **184 offline** (the default `pytest tests/` run) — no network, no LLM, no
+- **185 offline** (the default `pytest tests/` run) — no network, no LLM, no
   Qdrant server, no real API calls. External dependencies (Jina, Azure,
   Groq, Qdrant) are stubbed at the same `_request`-method boundary each
   client class calls internally, so a test never depends on model output —
   it depends on the code around the call.
 - **5 integration** (`pytest -m integration`, excluded by default) — real
   Qdrant (in-memory), real embeddings and reranking calls, real end-to-end
-  ingest→index→retrieve round trips. Added specifically because the fully
-  offline suite had passed while a stale index and a provenance-dropping bug
-  both shipped — mocks that are wrong in the same way as the code they mock
-  can't catch what only shows up at the real seams.
+  ingest→index→retrieve round trips. These exist because mocks that are wrong
+  in the same way as the code they mock can't catch what only shows up at the
+  real seams — a stale index or a dropped citation would still pass every
+  offline test.
 
 Notable cases: the retry loop terminating under an adversarial critic; missing
 profile fields never yielding "eligible"; Indic joiners (U+200C/U+200D) surviving
