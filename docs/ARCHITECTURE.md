@@ -28,15 +28,22 @@ ingestion filter with a quality floor.
 
 ```
                           INGESTION (offline)
-  myScheme pages ──Crawl4AI──▶ raw markdown
-  local PDFs     ──Docling───▶ markdown  (pymupdf4llm fallback)
+  myScheme public API ──────▶ every listed scheme, structured JSON → markdown
+  ministry sites      ──crawler──▶ HTML / PDF / DOCX / XLSX / PPTX / CSV / ZIP
+  scheme references   ──crawler──▶ guideline & notification PDFs cited by schemes
                        │
                        ▼
-        normalize → strip boilerplate → parent/child chunk
+        document store (current + superseded versions, keyed by URL)
                        │
                        ▼
-           Jina embeddings-v3 (1024-d) ──▶ Qdrant Cloud `setu-schemes`
-                                           dense (cosine) + sparse (BM25/IDF)
+        normalize → strip boilerplate → parent/child chunk  (whole store)
+                       │
+                       ▼
+   incremental sync: new children → Jina embeddings-v3 (1024-d) + BM25
+                     new parents  → BM25 only
+                     removed chunks → deleted (--prune)
+                       ▼
+                 Qdrant Cloud `setu-schemes`
 ```
 
 **QUERY (online)** — every LangGraph node, not collapsed (README's diagram
@@ -69,7 +76,7 @@ flowchart LR
 
     subgraph EXT["External services"]
         direction TB
-        GROQ[("Groq<br/>qwen3.6-27b")]
+        GROQ[("Groq<br/>qwen3.8-27b")]
         JINA[("Jina AI<br/>embed + rerank")]
         AZ[("Azure AI<br/>Translator")]
         QD[("Qdrant Cloud<br/>hybrid vector DB")]
@@ -116,12 +123,62 @@ run comfortably on a single free-tier host.
 
 ## 3. Ingestion
 
+Corpus building runs through one entry point, `scripts/crawl.py`, and
+`scripts/coverage.py` reports what each stage kept and lost.
+
+### `ingestion/myscheme_api.py` — the scheme directory
+myScheme is the national directory of central and state schemes, and the
+largest single authoritative source for this corpus. Its scheme pages are
+rendered client-side and its sitemap lists none of them, so neither HTML
+crawling nor sitemap discovery can enumerate it. The portal's frontend reads
+same-origin JSON routes that need no key and that robots.txt allows:
+`/api/apisetu/search/schemes` (a paginated listing of every scheme) and
+`/api/apisetu/schemes?slug=…` plus `/documents` and `/faqs` (full detail).
+
+Consuming those routes is both exhaustive and less fragile than rendering
+pages in a browser. Each record arrives with markdown for every section and
+with structured facts — nodal ministry, level, applicable states, category —
+that become chunk payload for filtering. Two details matter:
+
+- Listing pages are requested in name order. Under the API's default
+  relevance sort, items shift between offset pages and some schemes are
+  never returned.
+- Raw responses are cached one file per scheme, so an interrupted harvest
+  resumes where it stopped and re-rendering never re-fetches.
+
+Each scheme's `references` (guidelines, notifications, user manuals on
+official domains) become discovery seeds: `--follow-references N` fetches
+them as documents, so the authoritative PDF behind a scheme summary also
+enters the corpus.
+
+### `ingestion/document_store.py` — the corpus is the union of all runs
+The crawler returns only documents that are new in a given run; unchanged
+pages come back as 304s or content-hash duplicates. Every extracted document
+is therefore persisted, one current file per URL, and chunks are rebuilt from
+the whole store. When a URL's text changes, the previous version moves to
+`history/` rather than being overwritten, so a superseded guideline stays
+auditable even after it leaves the search index.
+
 ### `ingestion/scraper.py`
 Crawl4AI drives a real headless browser. This is not optional: myScheme is a
 client-rendered SPA, and a plain HTTP GET returns an empty application shell.
 Concurrency is capped at 3 — these are public government servers, not a CDN.
 `CacheMode.BYPASS` is set because scheme rules change and a stale cache would
 silently poison the index.
+
+### `ingestion/fetchers.py` — every format the crawl meets
+Format is decided by magic bytes first, then Content-Type, then extension,
+because government servers routinely mislabel files. HTML, PDF, DOCX, XLSX,
+PPTX, CSV, JSON, XML (including sitemaps) and ZIP archives each have an
+extractor that returns text plus provenance. Legacy binary Office files
+(`.doc`, `.xls`, `.ppt`) are identified as such and recorded as
+"unsupported format" rather than misrouted to a modern-format parser that
+would return nothing. Links are collected from HTML anchors, from sitemap
+`<loc>` entries, from browser-rendered pages, and from hyperlinks inside
+PDFs, since guidelines cite their annexures and amendments that way. A
+document below the quality floor is skipped with a reason naming its format,
+so a scanned PDF (retry with `--enable-ocr`) is distinguishable from an empty
+page in the crawl state.
 
 ### `ingestion/parser.py`
 Docling first, because it reconstructs tables, and eligibility criteria are
@@ -187,6 +244,17 @@ into raw term counting.
 Qdrant accepts only unsigned ints or UUIDs. A 32-char SHA-256 prefix is exactly
 a UUID's worth of bits, so `uuid.UUID(hex=chunk_id)` converts losslessly and
 deterministically. The original hex id is kept in the payload for citations.
+
+### Index sync
+Because chunk ids hash the chunk's own text, an id already in the collection
+means identical text is already embedded. `scripts/ingest.py --index-only`
+looks ids up first and embeds only what is new, in committed batches, so a
+re-run after adding a hundred schemes embeds a hundred schemes' chunks rather
+than the whole corpus, and an interrupted run resumes. Parent chunks get only
+the BM25 vector: retrieval dense-searches children, and parents are fetched
+by id, so a parent embedding would be paid for and never queried.
+`--prune` deletes points whose chunk is no longer in the corpus, which is how
+a changed document's superseded text leaves retrieval.
 
 ### Reranking
 Bi-encoders embed query and document separately — fast, approximate. A
@@ -372,7 +440,7 @@ Stated plainly, because a reviewer will find them anyway.
 | **Corpus is 44 schemes** | 234 chunks. Anything else returns an honest "not in my sources". Adding schemes means adding source URLs and re-running ingest; still a fraction of the hundreds of live MSME/welfare schemes. |
 | **Source errors propagate** | The Design Scheme page reads `₹ 40,000,00/-` (likely ₹40,00,000). SETU reproduces it verbatim. Grounding works; the source is wrong. Cited, not corrected. |
 | **Romanised Hindi vs Urdu** | Nearly indistinguishable transliterated; IndicLID sometimes prefers `urd_Latn`. A language-*detection* limitation, upstream of translation, independent of which backend translates. |
-| **Faithfulness sits at 0.857, below the 0.90 target** | Two evidenced causes (see `README.md` Evaluation section): Jina's reranker surfacing a tangentially-related chunk from a different scheme in at least one top-5, and `qwen3.6-27b` triggering the deterministic eligibility block frequently — accurate rule-engine output, but invisible to a metric that checks claims against retrieved passages. Neither is fixed yet. |
+| **Faithfulness clears the 0.90 target by a thin margin (0.906)** | Two evidenced causes (see `README.md` Evaluation section): Jina's reranker surfacing a tangentially-related chunk from a different scheme in at least one top-5, and the generation model triggering the deterministic eligibility block frequently — accurate rule-engine output, but invisible to a metric that checks claims against retrieved passages. Neither is fixed yet. |
 | **RAGAS needs a shim** | ragas 0.4.3 imports `langchain_community.chat_models.vertexai`, removed in langchain-community 0.4.x. A stub module is registered in `eval/ragas_eval.py`. Real workaround, documented as one. |
 | **Token budgets are approximate** | 4 chars/token. Devanagari and Tamil tokenize less efficiently, so real Indic chunks exceed 512 tokens. |
 | **Feedback persistence is a minimal stub, not a real data layer** | Chainlit's thumbs-up/down UI requires implementing its `BaseDataLayer` (18 methods) to appear at all. Only `upsert_feedback`/`delete_feedback` do real work, writing to a local SQLite file (`data/feedback.sqlite3`) — there's no thread-history/resume feature backing the other 16, which are deliberate no-ops. Fine for a single-instance deployment; would need a real backing store to survive across container restarts or multiple instances. |

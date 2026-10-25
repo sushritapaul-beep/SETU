@@ -419,7 +419,7 @@ def test_scraper_is_instantiable_and_scrapes_with_mocked_crawler(
     # The broken URL is dropped, not raised.
     assert len(records) == 1
     record = records[0]
-    assert set(record) == {"url", "title", "markdown", "scraped_at"}
+    assert set(record) == {"url", "title", "markdown", "scraped_at", "links"}
     assert record["url"] == urls[0]
     assert "Content scraped from" in record["markdown"]
     assert record["scraped_at"].endswith("+00:00"), "timestamps must be timezone-aware UTC"

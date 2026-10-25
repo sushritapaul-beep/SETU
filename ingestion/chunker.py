@@ -10,10 +10,22 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+# langchain_text_splitters' __init__ eagerly imports every optional backend.
+# With sentence-transformers installed (eval/ needs it) that pulls in torch —
+# measured at ~470 MB and ~40 s — for a character splitter that never touches
+# a tokenizer. Masking the two packages for this one import keeps them out;
+# only the HF-tokenizer splitters lose their backend, and nothing here uses them.
+_masked = [m for m in ("sentence_transformers", "transformers") if m not in sys.modules]
+sys.modules.update(dict.fromkeys(_masked))  # a None entry makes `import m` raise ImportError
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+finally:
+    for _name in _masked:
+        sys.modules.pop(_name, None)
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +142,17 @@ class ChunkMetadata:
     # Hash of the source document, linking a chunk back to the exact text and to
     # the crawl-state record that captured it.
     doc_hash: str = ""
+    # --- scheme facts, when the source states them (myScheme API does) ---
+    # Kept as payload so retrieval can filter by state/level/ministry instead of
+    # hoping the embedding picks up "Gujarat" from the text.
+    scheme_id: str = ""
+    ministry: str = ""
+    level: str = ""
+    states: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    # How the document entered the corpus (myscheme_api, crawl, ...), so a bad
+    # chunk can be traced to the mechanism that admitted it.
+    discovery_method: str = ""
 
 
 @dataclass(frozen=True)

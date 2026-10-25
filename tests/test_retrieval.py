@@ -326,3 +326,34 @@ def test_point_id_conversion_is_a_stable_uuid() -> None:
 
     assert first == QdrantStore._to_point_id(chunk_id)
     assert first == "00000000-0000-0000-0000-000000000001"
+
+
+def test_embedder_retries_rate_limits_only_when_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Indexing survives Jina's per-minute 429; a live query (no retries) fails fast."""
+    import httpx
+
+    import retrieval.embeddings as embeddings_module
+
+    request = httpx.Request("POST", embeddings_module.JINA_EMBEDDINGS_URL)
+    ok = httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+                        request=request)
+    limited = httpx.Response(429, headers={"Retry-After": "1"}, request=request)
+    monkeypatch.setattr(embeddings_module.time, "sleep", lambda _s: None)
+
+    def dropped() -> httpx.Response:
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    replies = iter([limited, dropped, ok])
+    embedder = JinaEmbedder(max_retries=3)
+
+    def post(*_args: object) -> httpx.Response:
+        reply = next(replies)
+        return reply() if callable(reply) else reply
+
+    monkeypatch.setattr(embedder, "_post", post)
+    assert embedder._request(["x"], "retrieval.passage") == [[1.0, 0.0]]
+
+    fast = JinaEmbedder()
+    monkeypatch.setattr(fast, "_post", lambda *_a: limited)
+    with pytest.raises(httpx.HTTPStatusError):
+        fast._request(["x"], "retrieval.query")

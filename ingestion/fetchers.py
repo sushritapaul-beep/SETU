@@ -30,10 +30,15 @@ CONTENT_TYPE_MAP: dict[str, str] = {
     "text/html": "html",
     "application/xhtml+xml": "html",
     "application/pdf": "pdf",
-    "application/msword": "docx",
+    # Legacy binary Office formats get their own family: python-docx and
+    # openpyxl cannot read them, and routing them there produced an empty
+    # document indistinguishable from a page with no content.
+    "application/msword": "doc",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-    "application/vnd.ms-excel": "xlsx",
+    "application/vnd.ms-excel": "xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "text/csv": "csv",
     "application/json": "json",
     "application/xml": "xml",
@@ -46,8 +51,9 @@ EXTENSION_MAP: dict[str, str] = {
     ".html": "html", ".htm": "html", ".xhtml": "html",
     ".aspx": "html", ".php": "html", ".jsp": "html",
     ".pdf": "pdf",
-    ".doc": "docx", ".docx": "docx",
-    ".xls": "xlsx", ".xlsx": "xlsx",
+    ".doc": "doc", ".docx": "docx",
+    ".xls": "xls", ".xlsx": "xlsx",
+    ".ppt": "ppt", ".pptx": "pptx",
     ".csv": "csv",
     ".json": "json",
     ".xml": "xml",
@@ -64,6 +70,9 @@ MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"<!DOCTYPE html", "html"),
     (b"<html", "html"),
 )
+
+# Reused across PDFs, keyed by the OCR flag; see extract_pdf.
+_PDF_PARSERS: dict[bool, Any] = {}
 
 # A document shorter than this is almost certainly an error page or a stub.
 MIN_USEFUL_CHARS = 120
@@ -118,6 +127,8 @@ def detect_format(url: str, content_type: str, payload: bytes) -> str:
                         return "docx"
                     if any(n.startswith("xl/") for n in names):
                         return "xlsx"
+                    if any(n.startswith("ppt/") for n in names):
+                        return "pptx"
             except (zipfile.BadZipFile, OSError):
                 pass
             return "zip"
@@ -209,8 +220,14 @@ def extract_pdf(
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(payload)
         tmp_path = Path(tmp.name)
+    # One parser per OCR setting for the whole process: DoclingParser loads its
+    # layout and OCR models on first use, and a fresh instance per PDF reloaded
+    # them every time until the crawl ran out of memory and crashed.
+    if enable_ocr not in _PDF_PARSERS:
+        _PDF_PARSERS[enable_ocr] = DoclingParser(enable_ocr=enable_ocr)
+    parser = _PDF_PARSERS[enable_ocr]
     try:
-        text = DoclingParser(enable_ocr=enable_ocr).parse_pdf(tmp_path)
+        text = parser.parse_pdf(tmp_path)
     except Exception as exc:  # noqa: BLE001 - one bad PDF must not stop a crawl
         logger.warning("PDF extraction failed for %s: %s", url, exc)
     finally:
@@ -220,7 +237,32 @@ def extract_pdf(
     return ExtractedDocument(
         url=url, text=text, title=title, doc_format="pdf",
         retrieved_at=datetime.now(UTC).isoformat(), content_type=content_type,
+        # Guidelines cite their annexures, amendments and forms by hyperlink;
+        # without these the crawler can never reach a document that is only
+        # linked from inside another document.
+        links=_pdf_links(payload),
     )
+
+
+def _pdf_links(payload: bytes) -> list[str]:
+    """Collect the external hyperlinks embedded in a PDF.
+
+    Args:
+        payload: Raw PDF bytes.
+
+    Returns:
+        http(s) link targets, de-duplicated, in page order. Empty when the PDF
+        cannot be opened — link discovery must never fail an extraction.
+    """
+    try:
+        import pymupdf
+
+        with pymupdf.open(stream=payload, filetype="pdf") as pdf:
+            uris = [link.get("uri", "") for page in pdf for link in page.get_links()]
+    except Exception as exc:  # noqa: BLE001 - links are a bonus, not the extraction
+        logger.debug("Could not read PDF links: %s", exc)
+        return []
+    return list(dict.fromkeys(u.strip() for u in uris if u.strip().startswith("http")))
 
 
 def extract_docx(url: str, payload: bytes, content_type: str) -> ExtractedDocument:
@@ -429,7 +471,7 @@ def extract_zip(
                 if info.is_dir() or info.file_size > 50 * 1024 * 1024:
                     continue
                 member_format = EXTENSION_MAP.get(Path(info.filename).suffix.lower())
-                if member_format not in {"pdf", "docx", "xlsx", "csv", "text", "html"}:
+                if member_format not in {"pdf", "docx", "xlsx", "pptx", "csv", "text", "html"}:
                     continue
                 data = archive.read(info)
                 inner = extract(f"{url}#{info.filename}", data, "", member_format)
@@ -442,6 +484,47 @@ def extract_zip(
         url=url, text="\n\n".join(parts),
         title=Path(url.split("?")[0]).stem.replace("_", " ").strip(),
         doc_format="zip", retrieved_at=datetime.now(UTC).isoformat(),
+        content_type=content_type,
+    )
+
+
+def extract_pptx(url: str, payload: bytes, content_type: str) -> ExtractedDocument:
+    """Extract slide text and tables from a PowerPoint deck.
+
+    Ministries publish scheme briefings and training decks as PPTX.
+
+    Args:
+        url: Source URL.
+        payload: Raw PPTX bytes.
+        content_type: Response content type.
+
+    Returns:
+        The extracted document, one section per slide.
+    """
+    from pptx import Presentation
+
+    parts: list[str] = []
+    try:
+        deck = Presentation(io.BytesIO(payload))
+        for number, slide in enumerate(deck.slides, start=1):
+            lines: list[str] = []
+            for shape in slide.shapes:
+                if shape.has_text_frame and shape.text_frame.text.strip():
+                    lines.append(shape.text_frame.text.strip())
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                        if cells:
+                            lines.append(" | ".join(cells))
+            if lines:
+                parts.append(f"## Slide {number}\n" + "\n".join(lines))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PPTX extraction failed for %s: %s", url, exc)
+
+    return ExtractedDocument(
+        url=url, text="\n\n".join(parts),
+        title=Path(url.split("?")[0]).stem.replace("_", " ").strip(),
+        doc_format="pptx", retrieved_at=datetime.now(UTC).isoformat(),
         content_type=content_type,
     )
 
@@ -509,8 +592,12 @@ def extract(
         return extract_zip(url, payload, content_type)
     if resolved == "text":
         return extract_text(url, payload, content_type)
+    if resolved == "pptx":
+        return extract_pptx(url, payload, content_type)
 
-    logger.debug("No extractor for format %r at %s", resolved, url)
+    # doc/xls/ppt (legacy binary Office) and anything unrecognised: reported by
+    # format, so the crawl records "unsupported format" rather than "no text".
+    logger.info("No extractor for format %r at %s", resolved, url)
     return ExtractedDocument(
         url=url, text="", title="", doc_format=resolved or "unknown",
         retrieved_at=datetime.now(UTC).isoformat(), content_type=content_type,

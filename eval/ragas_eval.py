@@ -83,7 +83,7 @@ RUNS_DIR = HISTORY_DIR / "_runs"
 # and the larger answer-generation model exhausts a 100k/day free tier before
 # it finishes. The 8B model is a weaker judge, so record which one produced a
 # score.
-DEFAULT_JUDGE = "llama-3.1-8b-instant"
+DEFAULT_JUDGE = "openai/gpt-oss-20b"
 
 # answer_relevancy's own similarity scoring needs a real local embedding
 # model — a HuggingFace Hub id, not the runtime pipeline's Jina API model.
@@ -235,6 +235,11 @@ def build_judge(model: str) -> tuple[Any, Any]:
         model=model,
         # Deterministic judging: a sampled judge makes runs incomparable.
         temperature=0.0,
+        # gpt-oss counts its hidden reasoning against the output budget; on a
+        # long faithfulness verdict that ran out mid-answer and RAGAS dropped
+        # the sample (LLMDidNotFinishException). Less reasoning, more room.
+        reasoning_effort="low",
+        max_tokens=8192,
         api_key=settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else None,
     )
     # answer_relevancy needs a real embedding model for its own similarity
@@ -307,8 +312,8 @@ def main() -> int:
     llm, embeddings = build_judge(args.judge_model)
     dataset = EvaluationDataset.from_list(samples)
 
-    # RAGAS parallelises metrics by default. llama-3.1-8b-instant allows only
-    # 6000 tokens/minute and each judging call carries the full context (~2500
+    # RAGAS parallelises metrics by default. Groq's free tier caps the judge
+    # at a few thousand tokens/minute and each judging call carries the full context (~2500
     # tokens), so even two workers spends most of its time in 429 backoff. One
     # worker is slower per step but finishes sooner overall.
     from ragas.run_config import RunConfig

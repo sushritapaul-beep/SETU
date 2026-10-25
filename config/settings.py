@@ -41,12 +41,10 @@ class Settings(BaseSettings):
     LLM_PROVIDER: LLMProvider = "groq"
 
     GROQ_API_KEY: SecretStr | None = None
-    # llama-3.3-70b-versatile is deprecated by Groq on 2026-08-16. qwen3.6-27b
-    # scores higher on independent reasoning benchmarks than the other
-    # Groq-suggested replacement (gpt-oss-120b) and — unlike gpt-oss-120b on
-    # Groq's stack — actually honours reasoning_effort="none", which matters
-    # here: _parse_json()'s greedy regex would misparse leaked reasoning text.
-    GROQ_MODEL: str = "qwen/qwen3.6-27b"
+    # qwen3.8-27b honours reasoning_effort="none" on Groq (gpt-oss-120b does
+    # not), which matters here: _parse_json()'s greedy regex would misparse
+    # leaked reasoning text.
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.1:8b"

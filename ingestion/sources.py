@@ -60,6 +60,7 @@ FETCHABLE_EXTENSIONS: frozenset[str] = frozenset(
         ".pdf",
         ".doc", ".docx",
         ".xls", ".xlsx",
+        ".ppt", ".pptx",
         ".csv",
         ".json",
         ".xml",
@@ -186,9 +187,12 @@ SOURCES: tuple[Source, ...] = (
         domain="kvic.gov.in",
         tier=Tier.IMPLEMENTER,
         seeds=("https://kvic.gov.in/",),
-        verified=True,
-        notes="PMEGP implementer. Note kvic.gov.in works; kviconline.gov.in "
-              "does not resolve.",
+        # Measured 2026-10-05: robots.txt is "User-agent: * / Disallow: /", so
+        # every page would be refused at fetch time anyway. PMEGP itself is on
+        # myScheme and reached through the API harvest instead.
+        verified=False,
+        notes="EXCLUDED BY robots.txt — the site disallows all crawling. "
+              "PMEGP content comes from the myScheme API harvest.",
     ),
     Source(
         key="champions",
@@ -225,8 +229,9 @@ SOURCES: tuple[Source, ...] = (
         domain="www.cgtmse.in",
         tier=Tier.IMPLEMENTER,
         seeds=("https://www.cgtmse.in/",),
-        verified=False,
-        notes="Seed soft-404s; needs a correct scheme path.",
+        verified=True,
+        notes="Re-probed 2026-10-05: homepage serves 8k chars of HTML with 42 "
+              "links over plain HTTP; robots.txt allows crawling.",
     ),
     Source(
         key="pmkisan",
@@ -235,7 +240,8 @@ SOURCES: tuple[Source, ...] = (
         tier=Tier.IMPLEMENTER,
         seeds=("https://pmkisan.gov.in/",),
         verified=False,
-        notes="Welfare. /Documents.aspx soft-404s; needs a correct path.",
+        notes="Welfare. Homepage resolves (2026-10-05) but serves a 21-char JS "
+              "shell over HTTP; scheme text is on myScheme.",
     ),
     Source(
         key="udyam",
@@ -244,7 +250,8 @@ SOURCES: tuple[Source, ...] = (
         tier=Tier.IMPLEMENTER,
         seeds=("https://udyamregistration.gov.in/",),
         verified=False,
-        notes="MSME classification thresholds. Seed returned 404.",
+        notes="MSME classification thresholds. Homepage resolves (2026-10-05) but "
+              "serves ~230 chars over HTTP; content is JS-rendered.",
     ),
     Source(
         key="tn_msme",
@@ -253,7 +260,9 @@ SOURCES: tuple[Source, ...] = (
         tier=Tier.STATE,
         seeds=("https://www.msmeonline.tn.gov.in/",),
         verified=False,
-        notes="State coverage for the Tamil use case. Seed returned 404.",
+        notes="State coverage for the Tamil use case. Homepage resolves "
+              "(2026-10-05) but serves ~70 chars over HTTP; JS-rendered. "
+              "TN schemes are reached via the myScheme API instead.",
     ),
     Source(
         key="wcd",
@@ -261,13 +270,12 @@ SOURCES: tuple[Source, ...] = (
         domain="wcd.gov.in",
         tier=Tier.MINISTRY,
         seeds=("https://wcd.gov.in/",),
-        verified=False,
-        # Measured 2026-08-06: robots.txt is exactly "User-agent: * / Disallow: /".
-        # The ministry has asked not to be crawled, and that is honoured. This
-        # entry exists so nobody re-adds the source without knowing why.
-        notes="EXCLUDED BY robots.txt — the site disallows all crawling. "
-              "Do not crawl. Scheme text must be sourced elsewhere "
-              "(myScheme carries WCD schemes).",
+        # 2026-08-06 robots.txt disallowed all crawling; re-probed 2026-10-05 it
+        # reads "Allow: /" and the homepage serves real HTML (113 links). The
+        # crawler re-checks robots.txt on every run, so a reversal is honoured.
+        verified=True,
+        notes="Welfare: women and child schemes. robots.txt allows crawling "
+              "as of 2026-10-05 (it disallowed all crawling in August).",
     ),
     Source(
         key="nsap",
@@ -386,4 +394,6 @@ def seed_urls(
         selected = tuple(SOURCES_BY_KEY[k] for k in keys)
     else:
         selected = tuple(s for s in SOURCES if s.verified or include_unverified)
-    return [(url, source) for source in selected for url in source.seeds]
+    # Sitemaps are seeds too: extract_xml turns each <loc> into a link, so a
+    # sitemap enumerates pages that navigation never links to.
+    return [(url, source) for source in selected for url in (*source.seeds, *source.sitemaps)]

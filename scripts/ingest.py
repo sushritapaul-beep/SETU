@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip scraping and parsing; embed and index an existing chunks.jsonl.",
     )
     parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="After indexing, delete points whose chunk is no longer in chunks.jsonl.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -180,14 +185,22 @@ def load_chunks(path: Path) -> list[Chunk]:
     return chunks
 
 
-def index_chunks(chunks: list[Chunk]) -> int:
-    """Embed chunks via Jina's API and upsert them into Qdrant Cloud.
+def index_chunks(chunks: list[Chunk], prune: bool = False, batch_size: int = 256) -> int:
+    """Sync chunks into Qdrant: embed only what is new, optionally drop what is gone.
+
+    Incremental by construction: chunk ids hash their own text, so a chunk whose
+    id is already in the collection is skipped without re-embedding. Work is
+    committed batch by batch, so an interrupted run resumes where it stopped.
 
     Args:
-        chunks: Chunks to index.
+        chunks: The full current corpus.
+        prune: Also delete points whose chunk is no longer in the corpus. Off by
+            default because it deletes from a shared collection.
+        batch_size: Chunks embedded and upserted per step.
 
     Returns:
-        Number of points written, or 0 if indexing could not run.
+        Number of points written (0 also when everything was already indexed),
+        or -1 if indexing could not run.
     """
     # Imported here so that --no-index runs never open a Qdrant connection
     # or need JINA_API_KEY set at all.
@@ -198,8 +211,8 @@ def index_chunks(chunks: list[Chunk]) -> int:
         logger.warning("No chunks to index")
         return 0
 
-    embedder = JinaEmbedder()
-    store = QdrantStore(dim=embedder.dim)
+    embedder = JinaEmbedder(max_retries=5)
+    store = QdrantStore(dim=embedder.dim, timeout=120)
 
     try:
         store.ensure_collection(dim=embedder.dim)
@@ -210,11 +223,26 @@ def index_chunks(chunks: list[Chunk]) -> int:
             get_settings().QDRANT_URL,
             exc,
         )
-        return 0
+        return -1
 
-    logger.info("Embedding %d chunks with %s", len(chunks), embedder.model_name)
-    vectors = embedder.embed_batch([c.text for c in chunks])
-    return store.upsert_chunks(chunks, vectors)
+    present = store.existing_chunk_ids([c.id for c in chunks])
+    todo = [c for c in chunks if c.id not in present]
+    children = [c for c in todo if c.metadata.chunk_type == "child"]
+    parents = [c for c in todo if c.metadata.chunk_type != "child"]
+    logger.info(
+        "%d chunks: %d already indexed, %d children to embed, %d parents (BM25 only)",
+        len(chunks), len(present), len(children), len(parents),
+    )
+
+    written = store.upsert_sparse_only(parents)
+    for start in range(0, len(children), batch_size):
+        batch = children[start : start + batch_size]
+        written += store.upsert_chunks(batch, embedder.embed_batch([c.text for c in batch]))
+        logger.info("Indexed %d/%d children", min(start + batch_size, len(children)), len(children))
+
+    if prune:
+        store.delete_points_not_in({c.id for c in chunks})
+    return written
 
 
 async def main() -> int:
@@ -236,9 +264,9 @@ async def main() -> int:
     if args.index_only:
         chunks = load_chunks(out_path)
         logger.info("Loaded %d chunks from %s", len(chunks), out_path)
-        indexed = index_chunks(chunks)
-        logger.info("Indexed %d points", indexed)
-        return 0 if indexed else 1
+        indexed = index_chunks(chunks, prune=args.prune)
+        logger.info("Indexed %d new points", max(indexed, 0))
+        return 1 if indexed < 0 else 0
 
     documents: list[tuple[str, str, str]] = []
     if not args.no_scrape:
@@ -278,7 +306,7 @@ async def main() -> int:
         logger.info("--no-index set; skipping embedding and Qdrant upsert")
         return 0
 
-    indexed = index_chunks(all_chunks)
+    indexed = index_chunks(all_chunks, prune=args.prune)
     logger.info("Indexed %d points into collection '%s'", indexed, get_settings().QDRANT_COLLECTION)
     return 0
 

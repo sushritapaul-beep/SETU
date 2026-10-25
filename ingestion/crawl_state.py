@@ -194,6 +194,41 @@ class CrawlState:
                 for r in cur.fetchall()
             ]
 
+    def done_urls(self) -> list[str]:
+        """URLs recorded as successfully fetched with unique content."""
+        with closing(self._conn.cursor()) as cur:
+            # A "duplicate" of its own earlier fetch is still that URL's unique
+            # content (older states recorded refetches that way), so it counts.
+            cur.execute(
+                "SELECT u.url FROM urls u LEFT JOIN content c ON c.content_hash = u.content_hash "
+                "WHERE u.status = ? OR (u.status = ? AND c.first_url = u.url)",
+                (STATUS_DONE, STATUS_DUPLICATE),
+            )
+            return [r["url"] for r in cur.fetchall()]
+
+    def requeue(self, urls: list[str]) -> int:
+        """Return URLs to the frontier so the next crawl fetches them again.
+
+        Used when the frontier says "done" but the fetched text was never
+        persisted (a crash between fetch and store); without this the crawler
+        would treat those documents as captured forever.
+
+        Args:
+            urls: URLs to reset.
+
+        Returns:
+            Number of URLs requeued.
+        """
+        with closing(self._conn.cursor()) as cur:
+            cur.executemany(
+                "UPDATE urls SET status = ?, attempts = 0, error = NULL, etag = NULL, "
+                "last_modified = NULL WHERE url = ?",
+                [(STATUS_PENDING, normalise_url(u)) for u in urls],
+            )
+            changed = cur.rowcount
+        self._conn.commit()
+        return changed
+
     # -------------------------------------------------------------- outcomes --
 
     def mark_done(
@@ -229,9 +264,11 @@ class CrawlState:
         with closing(self._conn.cursor()) as cur:
             cur.execute("SELECT first_url FROM content WHERE content_hash = ?", (text_hash,))
             existing = cur.fetchone()
-            is_new = existing is None
+            # Refetching a URL returns its own text; only text first captured
+            # from a *different* URL is a duplicate.
+            is_new = existing is None or existing["first_url"] == canonical
 
-            if is_new:
+            if existing is None:
                 cur.execute(
                     "INSERT INTO content (content_hash, first_url, bytes, seen_at) "
                     "VALUES (?, ?, ?, ?)",

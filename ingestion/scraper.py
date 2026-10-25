@@ -68,6 +68,9 @@ class SchemeScraper:
         self.timeout_seconds = timeout_seconds
         self.headless = headless
         self.wait_for_seconds = wait_for_seconds
+        # url -> the crawler's own error message, so callers can tell an
+        # access block apart from an empty render.
+        self.errors: dict[str, str] = {}
 
     async def scrape_urls(self, urls: list[str]) -> list[dict[str, Any]]:
         """Scrape every URL and return one record per page that succeeded.
@@ -141,9 +144,9 @@ class SchemeScraper:
             result = await crawler.arun(url=url, config=run_config)
 
         if not getattr(result, "success", False):
-            logger.warning(
-                "Scrape failed for %s: %s", url, getattr(result, "error_message", "unknown")
-            )
+            error = str(getattr(result, "error_message", "") or "unknown")
+            self.errors[url] = error
+            logger.warning("Scrape failed for %s: %s", url, error)
             return None
 
         markdown = self._extract_markdown(result)
@@ -160,7 +163,30 @@ class SchemeScraper:
             "title": self._extract_title(result, url),
             "markdown": markdown,
             "scraped_at": datetime.now(UTC).isoformat(),
+            "links": self._extract_links(result),
         }
+
+    @staticmethod
+    def _extract_links(result: Any) -> list[str]:
+        """Collect hrefs from the rendered page.
+
+        Crawl4AI reports links as {"internal": [...], "external": [...]}, each
+        entry a dict with an "href" (or a bare string in older versions).
+
+        Args:
+            result: A Crawl4AI CrawlResult.
+
+        Returns:
+            Absolute http(s) URLs in page order, de-duplicated.
+        """
+        links = getattr(result, "links", None) or {}
+        hrefs: list[str] = []
+        for group in ("internal", "external"):
+            for item in links.get(group, []) if isinstance(links, dict) else []:
+                href = item.get("href") if isinstance(item, dict) else item
+                if isinstance(href, str) and href.startswith("http"):
+                    hrefs.append(href)
+        return list(dict.fromkeys(hrefs))
 
     @staticmethod
     def _extract_markdown(result: Any) -> str:

@@ -23,6 +23,7 @@ import logging
 import random
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -258,15 +259,25 @@ class DomainLimiter:
 class GovernmentCrawler:
     """Crawls registered official sources and returns extracted documents."""
 
-    def __init__(self, config: CrawlConfig | None = None, state_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        config: CrawlConfig | None = None,
+        state_path: Path | None = None,
+        on_document: Callable[[ExtractedDocument], Any] | None = None,
+    ) -> None:
         """Configure the crawler.
 
         Args:
             config: Limits and behaviour. Defaults are conservative.
             state_path: Where the SQLite crawl state lives. Defaults to
                 data/crawl/crawl_state.db.
+            on_document: Called with each new document the moment it is
+                extracted. Persisting there, rather than after the crawl,
+                means a crash loses at most the documents in flight — the
+                frontier already records the rest as done.
         """
         self.config = config or CrawlConfig()
+        self.on_document = on_document
         self.state_path = state_path or (
             Path(__file__).resolve().parent.parent / "data" / "crawl" / "crawl_state.db"
         )
@@ -404,7 +415,15 @@ class GovernmentCrawler:
             return
 
         if not document.is_useful:
-            state.mark_skipped(url, f"insufficient text ({len(document.text)} chars)")
+            # The reason names the format so "unsupported format", "scanned PDF
+            # with OCR off" and "genuinely empty page" stay distinguishable in
+            # the coverage report instead of collapsing into one bucket.
+            reason = f"insufficient text ({len(document.text)} chars, format={document.doc_format})"
+            if document.doc_format == "pdf" and not self.config.enable_ocr:
+                reason += "; possibly scanned — retry with --enable-ocr"
+            elif document.doc_format in {"doc", "xls", "ppt", "unknown"}:
+                reason = f"unsupported format: {document.doc_format}"
+            state.mark_skipped(url, reason)
             return
 
         text_hash = content_hash(document.text)
@@ -420,6 +439,8 @@ class GovernmentCrawler:
         )
         if is_new:
             result.documents.append(document)
+            if self.on_document is not None:
+                self.on_document(document)
 
         if task.depth < self.config.max_depth:
             self._enqueue_links(document, task, source, state)
@@ -537,16 +558,19 @@ class GovernmentCrawler:
 
         from ingestion.scraper import SchemeScraper
 
+        scraper = SchemeScraper(max_concurrency=1, wait_for_seconds=3.0)
         try:
-            records = await SchemeScraper(
-                max_concurrency=1, wait_for_seconds=3.0
-            ).scrape_urls([task.url])
+            records = await scraper.scrape_urls([task.url])
         except Exception as exc:  # noqa: BLE001
             state.mark_failed(task.url, f"browser fetch failed: {exc}")
             return None
 
         if not records:
-            state.mark_failed(task.url, "browser returned no content")
+            error = scraper.errors.get(task.url, "browser returned no content")
+            # An anti-bot block is the site refusing automated access; retrying
+            # will not change that, and evading it is not something we do.
+            blocked = any(m in error.lower() for m in ("anti-bot", "captcha", "access denied"))
+            state.mark_failed(task.url, f"browser: {error}"[:300], permanent=blocked)
             return None
 
         record = records[0]
@@ -557,6 +581,9 @@ class GovernmentCrawler:
             doc_format="html",
             retrieved_at=record.get("scraped_at") or datetime.now(UTC).isoformat(),
             content_type="text/html",
+            # Without these a JS-rendered source never grows past its seed:
+            # the frontier only expands through a document's links.
+            links=record.get("links") or [],
         )
 
     def _enqueue_links(

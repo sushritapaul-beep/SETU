@@ -152,6 +152,19 @@ def test_frontier_is_breadth_first(state: CrawlState) -> None:
     assert batch[0].depth == 0
 
 
+def test_refetching_a_url_is_not_a_duplicate_of_itself(state: CrawlState) -> None:
+    """A requeued URL returning its own text must be stored again, not dropped."""
+    url = "https://socialjustice.gov.in/schemes/9"
+    text_hash = content_hash("Post-matric scholarship for SC students.")
+    state.add_url(url, 0, None)
+    kwargs = dict(http_status=200, content_type="text/html", text_hash=text_hash,
+                  title="S", etag=None, last_modified=None, size=100)
+    assert state.mark_done(url, **kwargs) is True
+    state.requeue([url])
+    assert state.mark_done(url, **kwargs) is True, "same URL, same text: still new"
+    assert state.done_urls() == [url]
+
+
 def test_identical_content_from_two_urls_deduplicates(state: CrawlState) -> None:
     """The same scheme on two portals is stored once."""
     text_hash = content_hash("Eligibility: must hold Udyam registration.")
@@ -540,16 +553,16 @@ def test_welfare_ministries_are_registered_and_verified() -> None:
 
 
 def test_robots_disallowed_source_stays_unverified() -> None:
-    """wcd.gov.in disallows all crawling; it must never be crawled by default.
+    """kvic.gov.in disallows all crawling; it must never be crawled by default.
 
     Kept in the registry rather than deleted so the reason survives — otherwise
     someone re-adds it, and the crawler silently skips it with no explanation.
     """
-    wcd = SOURCES_BY_KEY["wcd"]
+    kvic = SOURCES_BY_KEY["kvic"]
 
-    assert wcd.verified is False
-    assert "robots.txt" in wcd.notes.lower()
-    assert wcd.key not in {s.key for _, s in seed_urls()}
+    assert kvic.verified is False
+    assert "robots.txt" in kvic.notes.lower()
+    assert kvic.key not in {s.key for _, s in seed_urls()}
 
 
 def test_insecure_ssl_is_opt_in_and_justified() -> None:

@@ -42,6 +42,7 @@ class QdrantStore:
         collection: str | None = None,
         dim: int | None = None,
         embedder: Any | None = None,
+        timeout: int | None = None,
     ) -> None:
         """Connect to Qdrant.
 
@@ -52,6 +53,10 @@ class QdrantStore:
             dim: Dense vector width. Defaults to settings.EMBEDDING_DIM.
             embedder: Optional JinaEmbedder used by hybrid_search when the
                 caller does not supply a precomputed query vector.
+            timeout: Request timeout in seconds for a client built here. None
+                keeps the library default (5s), so live queries fail fast;
+                bulk indexing raises it, because a ~1 MB upsert of 64 dense
+                vectors can take longer than 5s to upload.
         """
         settings = get_settings()
         self.collection = collection or settings.QDRANT_COLLECTION
@@ -68,6 +73,7 @@ class QdrantStore:
                 # run without auth; send no key at all rather than an empty
                 # string, which the server would reject.
                 api_key=api_key.get_secret_value() if api_key else None,
+                timeout=timeout,
             )
 
     # ---------------------------------------------------------------- setup --
@@ -104,7 +110,7 @@ class QdrantStore:
             logger.info("Created collection %s (dim=%d)", collection, dim)
 
         # Indexed so child-only filtering stays fast as the corpus grows.
-        for field in ("chunk_type", "source_url"):
+        for field in ("chunk_type", "source_url", "level", "states", "ministry", "categories"):
             try:
                 self.client.create_payload_index(
                     collection_name=collection,
@@ -175,6 +181,96 @@ class QdrantStore:
 
         logger.info("Upserted %d points into %s", len(points), self.collection)
         return len(points)
+
+    def upsert_sparse_only(self, chunks: list[Chunk], batch_size: int = 64) -> int:
+        """Write chunks with a BM25 vector but no dense embedding.
+
+        For parent chunks: retrieval only ever dense-searches children (the
+        graph filters to chunk_type == "child"), and a parent is fetched by id.
+        Embedding parents would roughly double the embedding bill for vectors
+        nothing queries.
+
+        Args:
+            chunks: Chunks to index.
+            batch_size: Points sent per request.
+
+        Returns:
+            Number of points upserted.
+        """
+        # Points are built one batch at a time: every parent in a full corpus
+        # is tens of thousands of PointStructs if materialised up front.
+        for start in range(0, len(chunks), batch_size):
+            points = [
+                models.PointStruct(
+                    id=self._to_point_id(chunk.id),
+                    vector={SPARSE_VECTOR: models.Document(text=chunk.text, model=BM25_MODEL)},
+                    payload={"text": chunk.text, "chunk_id": chunk.id,
+                             "parent_id": chunk.parent_id, **asdict(chunk.metadata)},
+                )
+                for chunk in chunks[start : start + batch_size]
+            ]
+            self.client.upsert(collection_name=self.collection, points=points, wait=True)
+        return len(chunks)
+
+    def existing_chunk_ids(self, chunk_ids: list[str], batch_size: int = 256) -> set[str]:
+        """Which of these chunk ids already have a point in the collection.
+
+        Chunk ids hash the chunk's own text, so an existing id means identical
+        content is already embedded — re-embedding it would cost tokens and
+        change nothing.
+
+        Args:
+            chunk_ids: Hex chunk ids.
+            batch_size: Ids looked up per request.
+
+        Returns:
+            The subset already indexed.
+        """
+        found: set[str] = set()
+        for start in range(0, len(chunk_ids), batch_size):
+            records = self.client.retrieve(
+                collection_name=self.collection,
+                ids=[self._to_point_id(c) for c in chunk_ids[start : start + batch_size]],
+                with_payload=["chunk_id"],
+                with_vectors=False,
+            )
+            found.update(r.payload["chunk_id"] for r in records if r.payload)
+        return found
+
+    def delete_points_not_in(self, keep_chunk_ids: set[str]) -> int:
+        """Remove points whose chunk is no longer in the corpus.
+
+        When a source document changes, its chunks get new ids; without this
+        the superseded text stays searchable next to the current text. The
+        superseded document itself is preserved in the document store's
+        history, so this removes it from retrieval, not from the record.
+
+        Args:
+            keep_chunk_ids: Every chunk id in the current corpus.
+
+        Returns:
+            Number of points deleted.
+        """
+        stale: list[Any] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection, limit=1000, offset=offset,
+                with_payload=["chunk_id"], with_vectors=False,
+            )
+            stale += [p.id for p in points
+                      if (p.payload or {}).get("chunk_id") not in keep_chunk_ids]
+            if offset is None:
+                break
+        for start in range(0, len(stale), 500):
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=models.PointIdsList(points=stale[start : start + 500]),
+                wait=True,
+            )
+        if stale:
+            logger.info("Deleted %d stale points from %s", len(stale), self.collection)
+        return len(stale)
 
     # -------------------------------------------------------------- queries --
 
@@ -367,4 +463,9 @@ class QdrantStore:
             "modified_at": payload.get("modified_at"),
             "source_title": payload.get("source_title"),
             "doc_hash": payload.get("doc_hash"),
+            "ministry": payload.get("ministry"),
+            "level": payload.get("level"),
+            "states": payload.get("states"),
+            "categories": payload.get("categories"),
+            "discovery_method": payload.get("discovery_method"),
         }

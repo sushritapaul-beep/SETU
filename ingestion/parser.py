@@ -115,9 +115,18 @@ class DoclingParser:
         if self._converter is None:
             # Imported lazily: Docling pulls in torch and layout models, which
             # is far too heavy to pay for at module import time.
-            from docling.document_converter import DocumentConverter
+            from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import DocumentConverter, PdfFormatOption
 
-            self._converter = DocumentConverter()
+            # Docling's default docling-parse backend commits ~6 GB of private
+            # memory per page in flight (measured: 22 GB on an 18-page PDF), so
+            # pages fail with std::bad_alloc and the process can segfault once
+            # the system commit limit is hit. The pdfium backend peaked at
+            # 2.3 GB on the same PDF and kept every page.
+            self._converter = DocumentConverter(format_options={
+                InputFormat.PDF: PdfFormatOption(backend=PyPdfiumDocumentBackend),
+            })
 
         result = self._converter.convert(str(path))
         return result.document.export_to_markdown()

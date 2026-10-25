@@ -74,7 +74,7 @@ def get_llm() -> Any:
             max_retries=settings.LLM_MAX_RETRIES,
             timeout=settings.LLM_TIMEOUT_SECONDS,
             api_key=settings.GROQ_API_KEY.get_secret_value() if settings.GROQ_API_KEY else None,
-            # qwen3.6-27b is a reasoning model; SETU parses JSON straight out of
+            # qwen3.8-27b is a reasoning model; SETU parses JSON straight out of
             # the response, so thinking output must not leak into it. Ignored
             # by non-reasoning models if GROQ_MODEL is overridden.
             reasoning_effort="none",
