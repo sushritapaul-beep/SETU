@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](tests/)
-[![Faithfulness](https://img.shields.io/badge/faithfulness-0.91-brightgreen.svg)](eval/history/2026-10-26.json)
+[![Faithfulness](https://img.shields.io/badge/faithfulness-0.906-brightgreen.svg)](eval/history/2026-10-26.json)
 
 <p align="center">
   <img src="docs/demo.gif" alt="SETU answering a Hindi question about ZED certification with citations" width="900">
