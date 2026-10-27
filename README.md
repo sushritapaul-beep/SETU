@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-185%20passing-brightgreen.svg)](tests/)
-[![Faithfulness](https://img.shields.io/badge/faithfulness-0.86-yellow.svg)](eval/history/2026-08-15.json)
+[![Faithfulness](https://img.shields.io/badge/faithfulness-0.906-brightgreen.svg)](eval/history/2026-10-26.json)
 
 <p align="center">
   <img src="docs/demo.gif" alt="SETU answering a Hindi question about ZED certification with citations" width="900">
@@ -69,10 +69,10 @@ pipeline: the graph scores its own answer and can go back and search differently
 
 **Serving:** FastAPI (`/query`, `/query/stream` SSE) → Chainlit chat UI ·
 **Observability:** Langfuse traces every node ·
-**Evaluation:** RAGAS + DeepEval CI gate over a 25-query gold set
+**Evaluation:** RAGAS + DeepEval CI gate over a 37-query gold set
 
 Full component-by-component walkthrough: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
-Deploying: **[deploy/](deploy/)** — runs on Oracle Cloud Always Free, priced by allocation rather than uptime.
+Running with Docker: docker compose up --build starts the API and the chat UI on any machine with Docker. There’s no hosted demo; deploy/ has an optional guide for self-hosting on a free cloud VM.
 
 ## Quickstart
 
@@ -104,10 +104,6 @@ python eval/ragas_eval.py --limit 15
 
 pytest eval/deepeval_tests.py -m deepeval -v    # CI quality gate
 ```
-
-The full 25-query gold set needs roughly 146k tokens, above Groq's free daily
-limit for the judge model — either use `--limit 15`, or split generation from
-scoring across two days:
 
 ```bash
 python eval/ragas_eval.py --generate-only                     # caches answers
@@ -220,8 +216,7 @@ Stated plainly — a reviewer will find these anyway.
 
 - **Coverage is what myScheme serves.** The index holds 5,163 documents
   (all 5,075 schemes myScheme serves, plus 88 ministry pages and PDFs) as
-  34,624 chunks. The evaluation figures above predate this index and have not
-  been re-run.
+  34,624 chunks.
 - **16 schemes myScheme lists have no detail record** on the portal, so they
   are reported as gaps rather than ingested.
 - **Source errors propagate.** The Design Scheme page reads `₹ 40,000,00/-`
