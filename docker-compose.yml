@@ -1,12 +1,11 @@
-# SETU on a single host (Oracle Cloud Always Free A1, or any Docker host).
+# SETU on a single Docker host, reached through a Cloudflare tunnel.
 #
 # Three services, one internal network, nothing published to the host:
 # cloudflared tunnels straight to `ui` by service name, and `ui` reaches
 # `api` the same way, over SETU_API_URL=http://api:8000 - no port mapping,
 # no firewall rule, no public IP exposure beyond what the tunnel forwards.
-# See deploy/oracle/README.md for the full setup (instance, Docker install,
-# tunnel token, keep-alive). Both Dockerfiles are unchanged from every other
-# deploy target in this repo.
+# The tunnel needs CLOUDFLARE_TUNNEL_TOKEN in .env. To run SETU locally
+# without Docker, follow the Quickstart in README.md instead.
 
 services:
   api:

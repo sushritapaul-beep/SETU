@@ -1,10 +1,10 @@
 # SETU
 
-**Multilingual, cited RAG over Indian government MSME schemes — with an eligibility engine that never guesses.**
+**Multilingual, cited RAG over 5,000+ Indian government schemes — with an eligibility engine that never guesses.**
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-185%20passing-brightgreen.svg)](tests/)
-[![Faithfulness](https://img.shields.io/badge/faithfulness-0.86-yellow.svg)](eval/history/2026-08-15.json)
+[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](tests/)
+[![Faithfulness](https://img.shields.io/badge/faithfulness-0.91-brightgreen.svg)](eval/history/2026-10-26.json)
 
 <p align="center">
   <img src="docs/demo.gif" alt="SETU answering a Hindi question about ZED certification with citations" width="900">
@@ -15,7 +15,7 @@
 
 ## The problem
 
-India runs hundreds of MSME and welfare schemes, but their eligibility rules are
+India runs thousands of MSME and welfare schemes, but their eligibility rules are
 buried in English PDFs and JavaScript-rendered portals that the people who most
 need them cannot easily read. Generic chatbots answer these questions fluently
 and sometimes wrongly — and a confident *"yes, you qualify for a ₹10 lakh
@@ -69,15 +69,15 @@ pipeline: the graph scores its own answer and can go back and search differently
 
 **Serving:** FastAPI (`/query`, `/query/stream` SSE) → Chainlit chat UI ·
 **Observability:** Langfuse traces every node ·
-**Evaluation:** RAGAS + DeepEval CI gate over a 25-query gold set
+**Evaluation:** RAGAS + DeepEval CI gate over a 37-query gold set
 
 Full component-by-component walkthrough: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
-Deploying: **[deploy/](deploy/)** — runs on Oracle Cloud Always Free, priced by allocation rather than uptime.
 
 ## Quickstart
 
-Every backing service is free-tier cloud — Qdrant Cloud, Jina, Azure
-Translator, Groq, Langfuse Cloud — so there's no local infrastructure to run.
+SETU runs locally. Every backing service is a free-tier cloud API — Qdrant
+Cloud, Jina, Azure Translator, Groq, Langfuse Cloud — so there's no local
+infrastructure to run.
 
 ```bash
 python -m venv venv && venv\Scripts\activate    # source venv/bin/activate on macOS/Linux
@@ -85,11 +85,21 @@ pip install -r requirements.txt
 cp .env.example .env                            # add GROQ_API_KEY, JINA_API_KEY,
                                                 # AZURE_TRANSLATOR_KEY, QDRANT_URL/API_KEY —
                                                 # all free tier, see .env.example for signup links
-python scripts/ingest.py
+
+python scripts/crawl.py --myscheme              # fetch every scheme into data/ (~45 min, resumable)
+python scripts/ingest.py --index-only           # embed + index data/processed/chunks.jsonl
+
 uvicorn api.main:app --reload --port 8000       # then: chainlit run ui/chainlit_app.py --port 8001
 ```
 
 UI at <http://localhost:8001>, API docs at <http://localhost:8000/docs>.
+
+**Indexing cost.** Embedding the full corpus takes about 8.7M Jina tokens —
+most of a free Jina key's allowance — and each question then costs roughly
+7,000 tokens (query embedding plus reranking). Indexing is incremental and
+resumable: re-running `ingest.py --index-only` embeds only chunks not already
+in Qdrant. To index a subset first, point `--out` at a filtered copy of
+`chunks.jsonl`.
 
 <details>
 <summary>Optional: Langfuse tracing and evaluation</summary>
@@ -98,21 +108,25 @@ UI at <http://localhost:8001>, API docs at <http://localhost:8000/docs>.
 # Sign up at https://cloud.langfuse.com (free), create a project, paste the
 # keys into .env — no local containers needed.
 
-# Fits inside Groq's 100k-token free daily tier. --limit samples
-# proportionally across languages, so 15 means 9 hi / 3 ta / 3 hinglish.
-python eval/ragas_eval.py --limit 15
+# --limit samples proportionally across languages (hi / ta / hinglish).
+python eval/ragas_eval.py --limit 15 --metrics faithfulness context_recall
 
 pytest eval/deepeval_tests.py -m deepeval -v    # CI quality gate
 ```
 
-The full 25-query gold set needs roughly 146k tokens, above Groq's free daily
-limit for the judge model — either use `--limit 15`, or split generation from
-scoring across two days:
+The judge model is capped at 200,000 tokens per day on Groq's free tier, and
+scoring all 37 queries on two metrics needs more than that. Split generation
+from scoring; answers are cached, so scoring can resume the next day without
+regenerating:
 
 ```bash
 python eval/ragas_eval.py --generate-only                     # caches answers
-python eval/ragas_eval.py --from-cache eval/history/_runs/<file>.json
+python eval/ragas_eval.py --from-cache eval/history/_runs/<file>.json \
+    --metrics faithfulness context_recall
 ```
+
+`--from-cache` scores every answer in the file, so to finish only the
+unscored queries, score a copy of the cache file that contains just those.
 </details>
 
 ## Evaluation
@@ -169,9 +183,9 @@ pass (plus one Tamil query) 0.945, so the margin above target is thin.
 
 **Two metrics are deliberately not scored.** Each metric costs one judge call
 per sample, and Groq's free tier caps the judge at 8,000 tokens per minute and
-200,000 per day; two metrics over 37 queries already reach the daily cap. Faithfulness and context recall
-run instead, and the report records exactly which metrics ran so a
-partial run can never be mistaken for a full one.
+200,000 per day; two metrics over 37 queries already reach the daily cap.
+Faithfulness and context recall run instead, and the report records exactly
+which metrics ran so a partial run can never be mistaken for a full one.
 
 This is a 37-query gold set. It indicates the pipeline works; it is not a
 claim about production quality.
@@ -188,9 +202,8 @@ A retrieval signal from `scripts/smoke_retrieval.py`:
 That gap is the signal the agent uses to say "I don't have that scheme"
 instead of inventing one. A real scheme missing from the index scores in
 between, because a 5,000-scheme index almost always holds *something* loosely
-related;
-the refusal rests on the LLM and the self-critique loop, not on a score
-threshold.
+related; the refusal rests on the LLM and the self-critique loop, not on a
+score threshold.
 
 ## Tech stack
 
@@ -203,14 +216,14 @@ threshold.
 | Language ID | AI4Bharat IndicLID | Handles romanised Indic text, which generic detectors miss |
 | Translation | Azure AI Translator | Managed Indic ↔ English translation via API, no local model weight |
 | Generation | Groq `qwen/qwen3.8-27b`, Ollama fallback | Fast free tier; local path keeps demos alive offline |
-| Ingestion | myScheme API + Crawl4AI + Docling | myScheme's own public JSON API lists every scheme with structured sections; Crawl4AI covers JS-rendered ministry sites; Docling preserves the tables holding eligibility rules |
+| Ingestion | myScheme API + Crawl4AI + Docling | myScheme's own public JSON API lists every scheme with structured sections; Crawl4AI covers JS-rendered ministry sites; Docling (pdfium backend) preserves the tables holding eligibility rules |
 | Serving | FastAPI + Chainlit | SSE streaming; UI is a thin client that only calls the API |
 | Observability | Langfuse Cloud | Per-node traces with prompt versions attached |
 | Evaluation | RAGAS + DeepEval | RAGAS for trend, DeepEval as a pass/fail CI gate |
 
 Embeddings, reranking, and translation run as managed API calls rather than
-locally-loaded model weights — this keeps the serving footprint small enough
-to run comfortably on a single free-tier container, with nothing beyond
+locally-loaded model weights — this keeps the footprint small enough to run
+comfortably on a laptop, with nothing beyond
 language identification and the deterministic rules engine ever loaded
 in-process.
 
@@ -220,8 +233,17 @@ Stated plainly — a reviewer will find these anyway.
 
 - **Coverage is what myScheme serves.** The index holds 5,163 documents
   (all 5,075 schemes myScheme serves, plus 88 ministry pages and PDFs) as
-  34,624 chunks. The evaluation figures above predate this index and have not
-  been re-run.
+  34,624 chunks. The official guideline PDFs that schemes cite are not
+  ingested, so answers come from myScheme's summary of each scheme.
+- **Deterministic eligibility covers 5 schemes.** `data/eligibility_rules.json`
+  holds hand-authored rules for 5 schemes; for every other scheme SETU answers
+  eligibility questions from the cited official text instead of a rule verdict.
+- **Romanised Hindi is not translated before retrieval.** Azure Translator
+  returns romanised Hindi ("kitna paisa milta hai") unchanged, so Hinglish
+  queries are searched as typed. This works when the query carries English
+  keywords (scheme names, "documents", "loan"), but a query written entirely
+  in romanised Hindi retrieves less reliably. Romanised replies can also carry
+  transliteration artefacts (e.g. "ru." for "Rs.").
 - **16 schemes myScheme lists have no detail record** on the portal, so they
   are reported as gaps rather than ingested.
 - **Source errors propagate.** The Design Scheme page reads `₹ 40,000,00/-`
@@ -239,6 +261,8 @@ Stated plainly — a reviewer will find these anyway.
 ## Roadmap
 
 - [ ] Raise faithfulness margin above the 0.90 target (see Evaluation)
+- [ ] Transliterate romanised Hindi to Devanagari before translating queries
+- [ ] Extend deterministic eligibility rules beyond the current 5 schemes
 - [ ] Voice input via AI4Bharat IndicWhisper
 - [ ] Per-state scheme filtering from the extracted profile
 - [ ] Structured "documents you need" checklist as a separate deterministic tool

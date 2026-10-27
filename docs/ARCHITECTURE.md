@@ -398,13 +398,11 @@ The Chainlit UI (`ui/chainlit_app.py`) is a thin HTTP client over
 can restart independently of the API and deploys as its own, much smaller,
 container (`ui/Dockerfile`, `ui/requirements.txt`).
 
-Both containers deploy the same way: the root `Dockerfile` and
-`ui/Dockerfile`, unmodified, run via `docker-compose.yml` on an
-[Oracle Cloud Always Free](../deploy/oracle/) instance — see
-[`deploy/`](../deploy/) for the full setup. Oracle's Always Free A1 shape is
-priced by allocation (2 OCPU/12GB) rather than by active or awake compute
-time, which is what makes it fit a service that needs to be reachable at any
-time, including via a keep-alive monitor.
+SETU runs locally: `uvicorn` serves the API and `chainlit` the UI (see the
+README Quickstart). The root `Dockerfile` and `ui/Dockerfile` also package
+both as containers, and `docker-compose.yml` runs them together on a single
+Docker host, reaching the UI through a Cloudflare tunnel rather than a
+published port.
 
 `setu-api`'s IndicLID models are pre-warmed during FastAPI's `lifespan`
 startup hook and baked into the image at build time (`Dockerfile`), rather
